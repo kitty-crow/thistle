@@ -53,7 +53,7 @@ export class Wasi {
       this.mem = ex.memory;
       const fn = ex._start ?? ex.main;
       if (typeof fn !== "function") throw new KErr("ENOEXEC", "WASM module exports neither _start nor main");
-      const r = fn();
+      const r: number | undefined = fn() as number | undefined;
       if (typeof r === "number") code = r;
     } catch (e) {
       if (e instanceof WExit) code = e.code;
@@ -69,7 +69,7 @@ export class Wasi {
   }
 
   private imports(): WebAssembly.Imports {
-    const safe = <A extends unknown[]>(fn: (...a: A) => number) => (...a: A): number => {
+    const safe = <A extends Array<number | bigint>>(fn: (...a: A) => number) => (...a: A): number => {
       try { return fn(...a); } catch (e) { if (e instanceof WExit) throw e; return eno(e); }
     };
 
