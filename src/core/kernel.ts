@@ -264,8 +264,18 @@ export class Kern {
     p.mask = par.mask;
     this.procs.set(pid, p);
     par.kids.add(pid);
-    this.sched.add(p, async () => this.run(p, path, (await node.materialise()).slice(), argv));
+    this.sched.add(p, () => this.runMaterialised(p, path, node, argv));
     return p;
+  }
+
+  /**
+   * The task closure stays synchronous. The asynchronous materialisation is a
+   * named Thistle kernel method, which Bake can lower to a native coroutine
+   * without synthesising an asynchronous capturing closure.
+   */
+  private async runMaterialised(p: Proc, path: string, node: Reg, argv: string[]): Promise<void> {
+    const image = (await node.materialise()).slice();
+    await this.run(p, path, image, argv);
   }
 
   async exec(name: string, argv: string[], env: Map<string, string>, p: Proc): Promise<never> {
