@@ -8,9 +8,11 @@ import type { Cred } from "../fs/vfs.js";
 import { ExecReplace, Fd, Proc } from "./proc.js";
 import type { Io, Sig } from "./proc.js";
 import { Sys } from "./sys.js";
-import { Wasi } from "../wasm/wasi.js";
+import type { WasmGuestRunner } from "../wasm/guest-runner.js";
 import { Sched } from "./sched.js";
 import { Net } from "../net/net.js";
+import { hostNet } from "../net/host-fetch.js";
+import { HostWasiRunner } from "../wasm/host-wasi.js";
 import { Exe, codec, isExe } from "../asm/fmt.js";
 import { Vm } from "../vm/vm.js";
 import { Vm64 } from "../vm/vm64.js";
@@ -97,10 +99,12 @@ export class Kern {
   private haltFn?: () => void;
 
   constructor(
-    readonly net = new Net(),
+    readonly net: Net = hostNet(),
     readonly lim = Lim.host(),
     readonly config: SystemConfig = DEFAULT_CONFIG,
     readonly setId = false,
+    /** WebAssembly guest execution is supplied by the JavaScript host. */
+    readonly wasiGuest: WasmGuestRunner = new HostWasiRunner(),
   ) {
     this.fs = new Vfs(lim.fs);
     this.name = config.kernel.name;
@@ -264,8 +268,18 @@ export class Kern {
     p.mask = par.mask;
     this.procs.set(pid, p);
     par.kids.add(pid);
-    this.sched.add(p, async () => this.run(p, path, (await node.materialise()).slice(), argv));
+    this.sched.add(p, () => this.runMaterialised(p, path, node, argv));
     return p;
+  }
+
+  /**
+   * The task closure stays synchronous. The asynchronous materialisation is a
+   * named Thistle kernel method, which Bake can lower to a native coroutine
+   * without synthesising an asynchronous capturing closure.
+   */
+  private async runMaterialised(p: Proc, path: string, node: Reg, argv: string[]): Promise<void> {
+    const image = (await node.materialise()).slice();
+    await this.run(p, path, image, argv);
   }
 
   async exec(name: string, argv: string[], env: Map<string, string>, p: Proc): Promise<never> {
@@ -303,7 +317,9 @@ export class Kern {
       for (;;) {
         try {
           if (bin.length >= 4 && bin[0] === 0 && bin[1] === 0x61 && bin[2] === 0x73 && bin[3] === 0x6d) {
-        code = await new Wasi(new Sys(this, p)).run(bin, [path, ...argv]);
+        const runner = this.wasiGuest;
+        if (!runner) throw new KErr("ENOSYS", "WebAssembly guest runner was not provided by the host");
+        code = await runner.run(new Sys(this, p), bin, [path, ...argv]);
       } else if (isExe(bin)) {
         let x: Exe;
         try { const q = codec.unpack(bin); x = q instanceof Exe ? q : bad("ENOEXEC", `${path}: not an executable`); }

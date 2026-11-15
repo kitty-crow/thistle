@@ -7,7 +7,7 @@ export const enc = (s: string): Uint8Array => te.encode(s);
 export const dec = (b: Uint8Array): string => td.decode(b);
 
 export interface In {
-  tty?: unknown;
+  tty?: object;
   rd(): Promise<Uint8Array>;
   holdR?(): void;
   releaseR?(): void;
@@ -16,7 +16,7 @@ export interface In {
 }
 
 export interface Out {
-  tty?: unknown;
+  tty?: object;
   wr(b: Uint8Array): Promise<number>;
   hold?(): void;
   close?(): void;

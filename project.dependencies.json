@@ -5,7 +5,7 @@
       "name": "ThistleASM",
       "repository": "kitty-crow/thistle-asm",
       "path": "src/asm",
-      "commit": "2e6ce603ceeb5b202aa68c0b1a5001fba85b8d77",
+      "commit": "8a429ae914fa0ddc0769c0c7e7e65531615b6935",
       "relationship": "runtime",
       "direct": true,
       "updatePolicy": "pull-request"
