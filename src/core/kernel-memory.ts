@@ -12,3 +12,7 @@ export const THISTLE_KERNEL_MEMORY_BYTES = THISTLE_KERNEL_MEMORY_MIB * 1024 * 10
 export const THISTLE_WASM_INITIAL_PAGES = THISTLE_KERNEL_MEMORY_BYTES / THISTLE_WASM_PAGE_BYTES;
 /** Retain the existing 2 GiB growth ceiling until kernel allocation policy changes. */
 export const THISTLE_WASM_MAXIMUM_PAGES = 32768;
+
+/** Explicit ABI-friendly accessors consumed by Baguette's generated Teto module. */
+export const thistleKernelInitialPages = (): number => THISTLE_WASM_INITIAL_PAGES;
+export const thistleKernelMaximumPages = (): number => THISTLE_WASM_MAXIMUM_PAGES;
