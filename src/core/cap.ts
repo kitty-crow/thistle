@@ -11,7 +11,7 @@ interface Host {
   };
 }
 
-const host = globalThis as unknown as Host;
+const host = globalThis as Host;
 
 const ram = (): number => {
   const web = host.navigator?.deviceMemory;
