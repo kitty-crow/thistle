@@ -7,7 +7,7 @@
   "scripts": {
     "build": "rm -rf build && tsc -p tsconfig.json",
     "check": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run build && node --test build/test/kernel-memory.test.js"
+    "test": "npm run build && node --test build/test/*.test.js"
   },
   "devDependencies": {
     "@types/node": "^26.1.1",

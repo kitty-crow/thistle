@@ -37,51 +37,18 @@ export interface DRes {
   body: Uint8Array;
 }
 
-const hdrs = (h: Headers): Hdr => {
-  const out: Hdr = {};
-  h.forEach((v, k) => { out[k.toLowerCase()] = v; });
-  return out;
-};
-
-const bytes = async (r: Response, max: number): Promise<Uint8Array> => {
-  if (!r.body) return new Uint8Array();
-  const q: Uint8Array[] = [];
-  const rd = r.body.getReader();
-  let n = 0;
-  try {
-    for (;;) {
-      const x = await rd.read();
-      if (x.done) break;
-      n += x.value.length;
-      if (n > max) throw new KErr("EFBIG", `response exceeds ${max} bytes`);
-      q.push(x.value);
-    }
-  } finally { rd.releaseLock(); }
-  const b = new Uint8Array(n);
-  let at = 0;
-  for (const x of q) { b.set(x, at); at += x.length; }
-  return b;
-};
-
 /** A network device moves one HTTP exchange. Policy lives in Net. */
 export abstract class NetDev {
   abstract req(r: DReq, sig: AbortSignal): Promise<DRes>;
 }
 
-export class FetchDev extends NetDev {
-  override async req(r: DReq, sig: AbortSignal): Promise<DRes> {
-    const init: RequestInit = { method: r.method, headers: r.hdr, redirect: "manual", signal: sig };
-    if (r.body && r.method !== "GET" && r.method !== "HEAD") init.body = Uint8Array.from(r.body);
-    let x: Response;
-    try { x = await fetch(r.url, init); }
-    catch (e) { throw this.fail(e); }
-    return { url: x.url || r.url, status: x.status, text: x.statusText, hdr: hdrs(x.headers), body: await bytes(x, r.max) };
-  }
-
-  private fail(e: unknown): KErr {
-    if (e instanceof KErr) return e;
-    if (e instanceof DOMException && e.name === "AbortError") return new KErr("EINTR", "network request interrupted");
-    return new KErr("ENETUNREACH", e instanceof Error ? e.message : String(e));
+/**
+ * A native kernel has no implicit browser runtime. Host applications must
+ * supply a NetDev explicitly; network support cannot be inferred from fetch.
+ */
+export class MissingNetworkDevice extends NetDev {
+  override async req(_request: DReq, _signal: AbortSignal): Promise<DRes> {
+    throw new KErr("ENETUNREACH", "no network capability was supplied by the host");
   }
 }
 
@@ -94,7 +61,7 @@ export class Net {
   fails = 0;
   log: (s: string) => void = () => {};
 
-  constructor(readonly dev: NetDev = new FetchDev()) {}
+  constructor(readonly dev: NetDev = new MissingNetworkDevice()) {}
 
   async req(r: NReq, parent?: AbortSignal): Promise<NRes> {
     const method = (r.method ?? "GET").toUpperCase();
