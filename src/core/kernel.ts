@@ -8,7 +8,7 @@ import type { Cred } from "../fs/vfs.js";
 import { ExecReplace, Fd, Proc } from "./proc.js";
 import type { Io, Sig } from "./proc.js";
 import { Sys } from "./sys.js";
-import { Wasi } from "../wasm/wasi.js";
+import type { WasmGuestRunner } from "../wasm/guest-runner.js";
 import { Sched } from "./sched.js";
 import { Net } from "../net/net.js";
 import { Exe, codec, isExe } from "../asm/fmt.js";
@@ -101,6 +101,8 @@ export class Kern {
     readonly lim = Lim.host(),
     readonly config: SystemConfig = DEFAULT_CONFIG,
     readonly setId = false,
+    /** WebAssembly guest execution is supplied by the JavaScript host. */
+    readonly wasiGuest?: WasmGuestRunner,
   ) {
     this.fs = new Vfs(lim.fs);
     this.name = config.kernel.name;
@@ -313,7 +315,8 @@ export class Kern {
       for (;;) {
         try {
           if (bin.length >= 4 && bin[0] === 0 && bin[1] === 0x61 && bin[2] === 0x73 && bin[3] === 0x6d) {
-        code = await new Wasi(new Sys(this, p)).run(bin, [path, ...argv]);
+        if (!this.wasiGuest) bad("ENOSYS", "WebAssembly guest runner was not provided by the host");
+        code = await this.wasiGuest.run(new Sys(this, p), bin, [path, ...argv]);
       } else if (isExe(bin)) {
         let x: Exe;
         try { const q = codec.unpack(bin); x = q instanceof Exe ? q : bad("ENOEXEC", `${path}: not an executable`); }

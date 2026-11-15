@@ -3,6 +3,8 @@ import { test } from "node:test";
 import { KErr } from "../core/err.js";
 import { Net, NetDev, MissingNetworkDevice } from "../net/net.js";
 import { FetchDev, hostNet } from "../net/host-fetch.js";
+import { createHostKernel } from "../core/host-kernel.js";
+import { HostWasiRunner } from "../wasm/host-wasi.js";
 import type { DReq, DRes } from "../net/net.js";
 
 class StaticDevice extends NetDev {
@@ -40,4 +42,10 @@ test("Thistle policy delegates to the supplied host networking device", async ()
 
 test("direct TypeScript host wiring retains FetchDev transport", () => {
   assert.ok(hostNet().dev instanceof FetchDev);
+});
+
+test("direct host kernel receives network and WASI host capabilities", () => {
+  const kernel = createHostKernel();
+  assert.ok(kernel.net.dev instanceof FetchDev);
+  assert.ok(kernel.wasiGuest instanceof HostWasiRunner);
 });
