@@ -315,8 +315,9 @@ export class Kern {
       for (;;) {
         try {
           if (bin.length >= 4 && bin[0] === 0 && bin[1] === 0x61 && bin[2] === 0x73 && bin[3] === 0x6d) {
-        if (!this.wasiGuest) bad("ENOSYS", "WebAssembly guest runner was not provided by the host");
-        code = await this.wasiGuest.run(new Sys(this, p), bin, [path, ...argv]);
+        const runner = this.wasiGuest;
+        if (!runner) bad("ENOSYS", "WebAssembly guest runner was not provided by the host");
+        code = await runner.run(new Sys(this, p), bin, [path, ...argv]);
       } else if (isExe(bin)) {
         let x: Exe;
         try { const q = codec.unpack(bin); x = q instanceof Exe ? q : bad("ENOEXEC", `${path}: not an executable`); }
