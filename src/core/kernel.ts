@@ -11,6 +11,8 @@ import { Sys } from "./sys.js";
 import type { WasmGuestRunner } from "../wasm/guest-runner.js";
 import { Sched } from "./sched.js";
 import { Net } from "../net/net.js";
+import { hostNet } from "../net/host-fetch.js";
+import { HostWasiRunner } from "../wasm/host-wasi.js";
 import { Exe, codec, isExe } from "../asm/fmt.js";
 import { Vm } from "../vm/vm.js";
 import { Vm64 } from "../vm/vm64.js";
@@ -97,12 +99,12 @@ export class Kern {
   private haltFn?: () => void;
 
   constructor(
-    readonly net = new Net(),
+    readonly net: Net = hostNet(),
     readonly lim = Lim.host(),
     readonly config: SystemConfig = DEFAULT_CONFIG,
     readonly setId = false,
     /** WebAssembly guest execution is supplied by the JavaScript host. */
-    readonly wasiGuest?: WasmGuestRunner,
+    readonly wasiGuest: WasmGuestRunner = new HostWasiRunner(),
   ) {
     this.fs = new Vfs(lim.fs);
     this.name = config.kernel.name;
