@@ -69,6 +69,7 @@ import {
   H_FAULT,
   H_F,
   H_FCSR,
+  H_FLOAT_SCRATCH,
   H_HOST_TO_WASM,
   H_HOST_ADDRESS,
   H_HOST_DESCRIPTOR,
@@ -1914,7 +1915,8 @@ const floatingRaw = (memory: TetoMemory, hart: U32, register: U32, single: boole
 
 const floatingValue = (memory: TetoMemory, hart: U32, register: U32, single: boolean): F64 => {
   const raw = floatingRaw(memory, hart, register, single);
-  return single ? bitsToF32(raw) : bitsToF64(raw);
+  const scratch = hartAt(hart) + H_FLOAT_SCRATCH;
+  return single ? bitsToF32(memory, scratch, raw) : bitsToF64(memory, scratch, raw);
 };
 
 const putFloatingBits = (memory: TetoMemory, hart: U32, register: U32, value: U64, single: boolean): void => {
@@ -1922,7 +1924,8 @@ const putFloatingBits = (memory: TetoMemory, hart: U32, register: U32, value: U6
 };
 
 const putFloating = (memory: TetoMemory, hart: U32, register: U32, value: F64, single: boolean): void => {
-  putFloatingBits(memory, hart, register, single ? f32ToBits(roundF32(value)) : f64ToBits(value), single);
+  const scratch = hartAt(hart) + H_FLOAT_SCRATCH;
+  putFloatingBits(memory, hart, register, single ? f32ToBits(memory, scratch, roundF32(value)) : f64ToBits(memory, scratch, value), single);
 };
 
 const floatingRoundMode = (memory: TetoMemory, hart: U32, encoded: U32): I32 => {
@@ -2582,7 +2585,7 @@ const kernelSyscall = (memory: TetoMemory, hart: U32): I32 => {
       setPc(memory, hart, loadU64(memory, at + H_PC) - 4n);
       return TETO_BATCH_CONTENDED;
     }
-    let result: I64 = MAP_NOT_OWNED;
+    let result: I64;
     if (number === 216) {
       result = remapAnonymous(memory, hart, proc, ux(x(memory, hart, 10)), ux(x(memory, hart, 11)),
         ux(x(memory, hart, 12)), ux(x(memory, hart, 13)), ux(x(memory, hart, 14)));
