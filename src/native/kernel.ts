@@ -127,6 +127,7 @@ import {
   TETO_FAULT_INSTRUCTION,
   TETO_FAULT_MEMORY,
   TETO_FLAG_THREADED,
+  TETO_FLAG_HOST_STDIN,
   TETO_GUEST_PAGE_SIZE,
   TETO_GROUP_CAPACITY,
   TETO_HART_BASE,
@@ -138,6 +139,7 @@ import {
   TETO_HART_WAITING,
   TETO_HOST_NONE,
   TETO_HOST_WRITE,
+  TETO_HOST_READ,
   TETO_MAGIC,
   TETO_PAGE_CAPACITY,
   TETO_PAGE_ENTRY_SIZE,
@@ -2526,6 +2528,25 @@ const kernelSyscall = (memory: TetoMemory, hart: U32): I32 => {
     atomicStoreI32(memory, at + H_STATUS, TETO_HART_EXITED);
     return TETO_BATCH_EXITED;
   }
+  // Opt-in native console. Hosted runtimes retain their existing syscall path.
+  if (number === 63 && (loadU32(memory, TETO_CONTROL_BASE + C_FLAGS) & TETO_FLAG_HOST_STDIN) !== 0) {
+    const descriptor = wordToI32(x(memory, hart, 10));
+    if (descriptor !== 0) return fallbackSyscall(memory, hart);
+    if (ux(x(memory, hart, 12)) === 0n) return internalSyscall(memory, hart, 0n);
+    const address = ux(x(memory, hart, 11));
+    if (!guestAllowed(memory, hart, address, 1, TETO_SEGMENT_WRITE) ||
+        !guestWritable(memory, hart, address, 1)) return internalSyscall(memory, hart, -14n);
+    // A single-byte short read is valid; completion never writes outside it.
+    storeI32(memory, at + H_HOST_OPERATION, TETO_HOST_READ);
+    storeI32(memory, at + H_HOST_DESCRIPTOR, descriptor);
+    storeU64(memory, at + H_HOST_ADDRESS, address);
+    storeU32(memory, at + H_HOST_LENGTH, 1);
+    bump(memory, at + H_HOST_REQUESTS);
+    storeI32(memory, at + H_EVENT, TETO_EVENT_HOST);
+    atomicStoreI32(memory, at + H_STATUS, TETO_HART_WAITING);
+    if (proc !== INVALID_POINTER) atomicStoreI32(memory, proc + P_STATE, TETO_PROCESS_WAITING);
+    return TETO_BATCH_HOST;
+  }
   if (number === 64) {
     const descriptor = wordToI32(x(memory, hart, 10));
     const address = ux(x(memory, hart, 11));
@@ -2945,6 +2966,13 @@ export const tetoResumeSyscall = (memory: TetoMemory, hart: U32, result: I64): I
   return 0;
 };
 
+// Set during platform startup, before the first guest hart runs.
+export const tetoEnableHostStdin = (memory: TetoMemory): I32 => {
+  if (!tetoKernelValid(memory)) return TETO_FAULT_BAD_STATE;
+  storeU32(memory, TETO_CONTROL_BASE + C_FLAGS, loadU32(memory, TETO_CONTROL_BASE + C_FLAGS) | TETO_FLAG_HOST_STDIN);
+  return 0;
+};
+
 export const tetoResumeHost = (memory: TetoMemory, hart: U32, result: I64): I32 => {
   if (!validHart(memory, hart)) return TETO_FAULT_BAD_STATE;
   const at = hartAt(hart);
@@ -2952,6 +2980,42 @@ export const tetoResumeHost = (memory: TetoMemory, hart: U32, result: I64): I32 
   if (atomicLoadI32(memory, at + H_STATUS) !== TETO_HART_WAITING || loadI32(memory, at + H_EVENT) !== TETO_EVENT_HOST) {
     release(memory, at + H_LOCK);
     return TETO_FAULT_BAD_STATE;
+  }
+  if (loadI32(memory, at + H_HOST_OPERATION) === TETO_HOST_READ) {
+    release(memory, at + H_LOCK);
+    return TETO_FAULT_BAD_STATE;
+  }
+  setX(memory, hart, 10, result);
+  storeI32(memory, at + H_HOST_OPERATION, TETO_HOST_NONE);
+  storeI32(memory, at + H_HOST_DESCRIPTOR, -1);
+  storeU64(memory, at + H_HOST_ADDRESS, 0n);
+  storeU32(memory, at + H_HOST_LENGTH, 0);
+  storeI32(memory, at + H_EVENT, TETO_EVENT_NONE);
+  atomicStoreI32(memory, at + H_STATUS, TETO_HART_RUNNABLE);
+  const proc = processForHart(memory, hart);
+  if (proc !== INVALID_POINTER) atomicStoreI32(memory, proc + P_STATE, TETO_PROCESS_RUNNABLE);
+  release(memory, at + H_LOCK);
+  return 0;
+};
+
+// Complete a pending one-byte stdin request under the hart lock.
+// byte == -1 denotes EOF; other negative values are not accepted.
+export const tetoResumeHostRead = (memory: TetoMemory, hart: U32, byte: I32): I32 => {
+  if (!validHart(memory, hart) || byte < -1 || byte > 255) return TETO_FAULT_BAD_STATE;
+  const at = hartAt(hart);
+  if (!acquire(memory, at + H_LOCK)) return TETO_BATCH_BUSY;
+  if (atomicLoadI32(memory, at + H_STATUS) !== TETO_HART_WAITING ||
+      loadI32(memory, at + H_EVENT) !== TETO_EVENT_HOST ||
+      loadI32(memory, at + H_HOST_OPERATION) !== TETO_HOST_READ ||
+      loadU32(memory, at + H_HOST_LENGTH) !== 1) {
+    release(memory, at + H_LOCK);
+    return TETO_FAULT_BAD_STATE;
+  }
+  const address = loadU64(memory, at + H_HOST_ADDRESS);
+  let result: I64 = 0n;
+  if (byte >= 0) {
+    result = guestAllowed(memory, hart, address, 1, TETO_SEGMENT_WRITE) &&
+      guestStoreU64(memory, hart, address, ux(word(byte)), 1) ? 1n : -14n;
   }
   setX(memory, hart, 10, result);
   storeI32(memory, at + H_HOST_OPERATION, TETO_HOST_NONE);

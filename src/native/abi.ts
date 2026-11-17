@@ -64,6 +64,7 @@ export const W_INSTRUCTIONS: U32 = 8;
 export const W_IDLE: U32 = 16;
 
 export const TETO_FLAG_THREADED: U32 = 1;
+export const TETO_FLAG_HOST_STDIN: U32 = 2;
 
 export const H_LOCK: U32 = 0;
 export const H_STATUS: U32 = 4;
@@ -262,6 +263,7 @@ export const TETO_EVENT_HOST: I32 = 2;
 
 export const TETO_HOST_NONE: I32 = 0;
 export const TETO_HOST_WRITE: I32 = 1;
+export const TETO_HOST_READ: I32 = 2;
 
 export const TETO_BATCH_BUDGET: I32 = 0;
 export const TETO_BATCH_SYSCALL: I32 = 1;
