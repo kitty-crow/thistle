@@ -17,6 +17,8 @@ import {
   C_VFS_INODE_COUNT,
   C_VFS_LOADED,
   C_VFS_ROOT,
+  C_VFS_SCRATCH_BASE,
+  TETO_VFS_PATH_CAPACITY,
   D_FLAGS,
   D_INODE,
   D_NAME,
@@ -26,14 +28,11 @@ import {
   TETO_CONTROL_BASE,
   TETO_VFS_CAPACITY_ERROR,
   TETO_VFS_CHECKSUM,
-  TETO_VFS_DATA_CAPACITY,
-  TETO_VFS_DENTRY_CAPACITY,
   TETO_VFS_DENTRY_STRIDE,
   TETO_VFS_DUPLICATE,
   TETO_VFS_FORMAT,
   TETO_VFS_IMAGE_MAGIC,
   TETO_VFS_IMAGE_VERSION,
-  TETO_VFS_INODE_CAPACITY,
   TETO_VFS_INODE_STRIDE,
   TETO_VFS_KIND_DIRECTORY,
   TETO_VFS_KIND_EMPTY,
@@ -309,16 +308,28 @@ export const tetoVfsResolve = (
 export const tetoVfsAccess = (memory: TetoMemory, proc: Ptr, inode: U32, bits: U32): boolean =>
   tetoVfsKind(memory, inode) !== TETO_VFS_KIND_EMPTY && bits <= 7 && allowed(memory, proc, inode, bits);
 
-export const tetoVfsReadData = (memory: TetoMemory, inode: U32, offset: U64, output: Ptr, length: U32): I32 => {
+const readData = (memory: TetoMemory, inode: U32, offset: U64, output: Ptr, length: U32): I32 => {
   const kind = tetoVfsKind(memory, inode);
-  if ((kind !== TETO_VFS_KIND_FILE && kind !== TETO_VFS_KIND_LINK) || !inputContains(memory, output, length)) return -22;
+  if (kind !== TETO_VFS_KIND_FILE && kind !== TETO_VFS_KIND_LINK) return -22;
   const state = inodeAt(memory, inode);
   const size = loadU64(memory, state + V_SIZE);
-  if (offset > size) return -22;
+  if (offset >= size) return 0;
   const available = size - offset;
   const amount = available < ux(word(length)) ? wordToU32(available) : length;
   if (amount !== 0) copyMemory(memory, output, loadU32(memory, state + V_DATA) + wordToU32(offset), amount);
   return wordToU32(word(amount));
+};
+
+export const tetoVfsReadData = (memory: TetoMemory, inode: U32, offset: U64, output: Ptr, length: U32): I32 => {
+  if (!inputContains(memory, output, length)) return -22;
+  return readData(memory, inode, offset, output, length);
+};
+
+// The caller holds the VFS lock. The destination is the fixed kernel scratch arena.
+export const tetoVfsReadScratch = (memory: TetoMemory, inode: U32, offset: U64, length: U32): I32 => {
+  const output = loadU32(memory, TETO_CONTROL_BASE + C_VFS_SCRATCH_BASE);
+  if (length > TETO_VFS_PATH_CAPACITY || !memoryContains(memory, output, length)) return -22;
+  return readData(memory, inode, offset, output, length);
 };
 
 export const tetoLoadVfs = (memory: TetoMemory, image: Ptr, imageLength: U32): I32 => {
@@ -328,8 +339,12 @@ export const tetoLoadVfs = (memory: TetoMemory, image: Ptr, imageLength: U32): I
   const inodeCount = loadU32(memory, image + 8);
   const dentryCount = loadU32(memory, image + 12);
   const root = loadU32(memory, image + 16);
-  if (inodeCount === 0 || inodeCount >= TETO_VFS_INODE_CAPACITY || dentryCount > TETO_VFS_DENTRY_CAPACITY ||
-      root === 0 || root >= TETO_VFS_INODE_CAPACITY) return TETO_VFS_CAPACITY_ERROR;
+  const inodeCapacity = loadU32(memory, TETO_CONTROL_BASE + C_VFS_INODE_CAPACITY);
+  const dentryCapacity = loadU32(memory, TETO_CONTROL_BASE + C_VFS_DENTRY_CAPACITY);
+  const dataCapacity = loadU32(memory, TETO_CONTROL_BASE + C_VFS_DATA_END) -
+    loadU32(memory, TETO_CONTROL_BASE + C_VFS_DATA_BASE);
+  if (inodeCount === 0 || inodeCount >= inodeCapacity || dentryCount > dentryCapacity ||
+      root === 0 || root >= inodeCapacity) return TETO_VFS_CAPACITY_ERROR;
   if (hashBytes(memory, image + VFS_HEADER_SIZE, imageLength - VFS_HEADER_SIZE) !== loadU32(memory, image + 24)) {
     return TETO_VFS_CHECKSUM;
   }
@@ -338,8 +353,8 @@ export const tetoLoadVfs = (memory: TetoMemory, image: Ptr, imageLength: U32): I
   const dentryBase = loadU32(memory, TETO_CONTROL_BASE + C_VFS_DENTRY_BASE);
   const dataBase = loadU32(memory, TETO_CONTROL_BASE + C_VFS_DATA_BASE);
   const oldNext = loadU32(memory, TETO_CONTROL_BASE + C_VFS_DATA_NEXT);
-  fill(memory, inodeBase, TETO_VFS_INODE_CAPACITY * TETO_VFS_INODE_STRIDE, 0);
-  fill(memory, dentryBase, TETO_VFS_DENTRY_CAPACITY * TETO_VFS_DENTRY_STRIDE, 0);
+  fill(memory, inodeBase, inodeCapacity * TETO_VFS_INODE_STRIDE, 0);
+  fill(memory, dentryBase, dentryCapacity * TETO_VFS_DENTRY_STRIDE, 0);
   if (oldNext > dataBase) fill(memory, dataBase, oldNext - dataBase, 0);
   storeU32(memory, TETO_CONTROL_BASE + C_VFS_DATA_NEXT, dataBase);
   storeU32(memory, TETO_CONTROL_BASE + C_VFS_LOADED, 0);
@@ -352,9 +367,9 @@ export const tetoLoadVfs = (memory: TetoMemory, image: Ptr, imageLength: U32): I
     const inode = loadU32(memory, cursor);
     const kind = loadU32(memory, cursor + 4);
     const payloadLength = loadU32(memory, cursor + 24);
-    if (inode === 0 || inode >= TETO_VFS_INODE_CAPACITY ||
+    if (inode === 0 || inode >= inodeCapacity ||
         (kind !== TETO_VFS_KIND_FILE && kind !== TETO_VFS_KIND_DIRECTORY && kind !== TETO_VFS_KIND_LINK) ||
-        loadU32(memory, cursor + 20) === 0 || payloadLength > TETO_VFS_DATA_CAPACITY ||
+        loadU32(memory, cursor + 20) === 0 || payloadLength > dataCapacity ||
         (kind === TETO_VFS_KIND_DIRECTORY && payloadLength !== 0) ||
         cursor + VFS_INODE_IMAGE_SIZE > end || payloadLength > end - (cursor + VFS_INODE_IMAGE_SIZE)) return TETO_VFS_FORMAT;
     const state = inodeAt(memory, inode);
@@ -389,7 +404,7 @@ export const tetoLoadVfs = (memory: TetoMemory, image: Ptr, imageLength: U32): I
     const inode = loadU32(memory, cursor + 4);
     const nameLength = loadU32(memory, cursor + 8);
     const nameAt = cursor + VFS_DENTRY_IMAGE_SIZE;
-    if (parent === 0 || inode === 0 || parent >= TETO_VFS_INODE_CAPACITY || inode >= TETO_VFS_INODE_CAPACITY ||
+    if (parent === 0 || inode === 0 || parent >= inodeCapacity || inode >= inodeCapacity ||
         loadU32(memory, inodeAt(memory, parent) + V_KIND) !== TETO_VFS_KIND_DIRECTORY ||
         loadU32(memory, inodeAt(memory, inode) + V_KIND) === TETO_VFS_KIND_EMPTY ||
         nameLength > end - nameAt || !validName(memory, nameAt, nameLength)) return TETO_VFS_FORMAT;

@@ -64,6 +64,7 @@ export const W_INSTRUCTIONS: U32 = 8;
 export const W_IDLE: U32 = 16;
 
 export const TETO_FLAG_THREADED: U32 = 1;
+export const TETO_FLAG_HOST_STDIN: U32 = 2;
 
 export const H_LOCK: U32 = 0;
 export const H_STATUS: U32 = 4;
@@ -203,6 +204,10 @@ export const TETO_VFS_INODE_CAPACITY: U32 = 4096;
 export const TETO_VFS_DENTRY_STRIDE: U32 = 24;
 export const TETO_VFS_DENTRY_CAPACITY: U32 = 8192;
 export const TETO_VFS_DATA_CAPACITY: U32 = 16 * 1024 * 1024;
+export const TETO_VFS_MAX_INODE_CAPACITY: U32 = 16384;
+export const TETO_VFS_MAX_DENTRY_CAPACITY: U32 = 32768;
+export const TETO_VFS_MAX_DATA_CAPACITY: U32 = 128 * 1024 * 1024;
+export const TETO_VFS_MAX_IMAGE_SIZE: U32 = 144 * 1024 * 1024;
 export const V_KIND: U32 = 0;
 export const V_MODE: U32 = 4;
 export const V_UID: U32 = 8;
@@ -262,6 +267,7 @@ export const TETO_EVENT_HOST: I32 = 2;
 
 export const TETO_HOST_NONE: I32 = 0;
 export const TETO_HOST_WRITE: I32 = 1;
+export const TETO_HOST_READ: I32 = 2;
 
 export const TETO_BATCH_BUDGET: I32 = 0;
 export const TETO_BATCH_SYSCALL: I32 = 1;

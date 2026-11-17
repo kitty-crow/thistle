@@ -127,6 +127,7 @@ import {
   TETO_FAULT_INSTRUCTION,
   TETO_FAULT_MEMORY,
   TETO_FLAG_THREADED,
+  TETO_FLAG_HOST_STDIN,
   TETO_GUEST_PAGE_SIZE,
   TETO_GROUP_CAPACITY,
   TETO_HART_BASE,
@@ -138,6 +139,7 @@ import {
   TETO_HART_WAITING,
   TETO_HOST_NONE,
   TETO_HOST_WRITE,
+  TETO_HOST_READ,
   TETO_MAGIC,
   TETO_PAGE_CAPACITY,
   TETO_PAGE_ENTRY_SIZE,
@@ -228,6 +230,9 @@ import {
   TETO_VFS_DENTRY_STRIDE,
   TETO_VFS_INODE_CAPACITY,
   TETO_VFS_INODE_STRIDE,
+  TETO_VFS_MAX_INODE_CAPACITY,
+  TETO_VFS_MAX_DENTRY_CAPACITY,
+  TETO_VFS_MAX_DATA_CAPACITY,
   TETO_VFS_KIND_DIRECTORY,
   TETO_VFS_KIND_FILE,
   TETO_VFS_PATH_CAPACITY,
@@ -308,6 +313,8 @@ import {
   tetoVfsFileSize,
   tetoVfsKind,
   tetoVfsReadData,
+  tetoVfsReadScratch,
+  tetoVfsLoaded,
   tetoVfsResolve,
   tetoVfsRoot,
 } from "./vfs.js";
@@ -413,7 +420,16 @@ const acquire = (memory: TetoMemory, at: Ptr): boolean =>
 
 const release = (memory: TetoMemory, at: Ptr): void => atomicStoreI32(memory, at, 0);
 
-export const tetoKernelInit = (memory: TetoMemory, maxHarts: U32, threaded: boolean): I32 => {
+export const tetoKernelInit = (memory: TetoMemory, maxHarts: U32, threaded: boolean): I32 =>
+  tetoKernelInitWithVfs(memory, maxHarts, threaded, TETO_VFS_INODE_CAPACITY, TETO_VFS_DENTRY_CAPACITY, TETO_VFS_DATA_CAPACITY);
+
+export const tetoKernelInitWithVfs = (
+  memory: TetoMemory, maxHarts: U32, threaded: boolean,
+  inodeCapacity: U32, dentryCapacity: U32, dataCapacity: U32,
+): I32 => {
+  if (inodeCapacity < 2 || inodeCapacity > TETO_VFS_MAX_INODE_CAPACITY ||
+      dentryCapacity < 1 || dentryCapacity > TETO_VFS_MAX_DENTRY_CAPACITY ||
+      dataCapacity < 4096 || dataCapacity > TETO_VFS_MAX_DATA_CAPACITY) return TETO_FAULT_BAD_STATE;
   if (maxHarts < 1 || maxHarts > 1024) return TETO_FAULT_BAD_STATE;
   const hartEnd = TETO_HART_BASE + maxHarts * TETO_HART_STRIDE;
   const processCapacity = maxHarts > 32 ? 256 : maxHarts * 8;
@@ -425,12 +441,12 @@ export const tetoKernelInit = (memory: TetoMemory, maxHarts: U32, threaded: bool
   const mapBytes = processCapacity * TETO_MAP_CAPACITY * TETO_MAP_STRIDE;
   const vfsScratch = pageAlign(mapTables + mapBytes);
   const inodeTable = pageAlign(vfsScratch + TETO_VFS_PATH_CAPACITY);
-  const dentryTable = pageAlign(inodeTable + TETO_VFS_INODE_CAPACITY * TETO_VFS_INODE_STRIDE);
-  const descriptorTables = pageAlign(dentryTable + TETO_VFS_DENTRY_CAPACITY * TETO_VFS_DENTRY_STRIDE);
+  const dentryTable = pageAlign(inodeTable + inodeCapacity * TETO_VFS_INODE_STRIDE);
+  const descriptorTables = pageAlign(dentryTable + dentryCapacity * TETO_VFS_DENTRY_STRIDE);
   const descriptorBytes = processCapacity * TETO_DESCRIPTOR_CAPACITY * TETO_DESCRIPTOR_STRIDE;
   const processTable = pageAlign(descriptorTables + descriptorBytes);
   const vfsData = pageAlign(processTable + processCapacity * TETO_PROCESS_STRIDE);
-  const physical = pageAlign(vfsData + TETO_VFS_DATA_CAPACITY);
+  const physical = pageAlign(vfsData + dataCapacity);
   const total = memorySizeOf(memory);
   if (physical < pageTables || physical > total || total - physical < TETO_GUEST_PAGE_SIZE) return TETO_FAULT_MEMORY;
   fill(memory, TETO_CONTROL_BASE, physical, 0);
@@ -446,11 +462,11 @@ export const tetoKernelInit = (memory: TetoMemory, maxHarts: U32, threaded: bool
   storeU32(memory, TETO_CONTROL_BASE + C_MAP_CAPACITY, TETO_MAP_CAPACITY);
   storeU32(memory, TETO_CONTROL_BASE + C_VFS_SCRATCH_BASE, vfsScratch);
   storeU32(memory, TETO_CONTROL_BASE + C_VFS_INODE_BASE, inodeTable);
-  storeU32(memory, TETO_CONTROL_BASE + C_VFS_INODE_CAPACITY, TETO_VFS_INODE_CAPACITY);
+  storeU32(memory, TETO_CONTROL_BASE + C_VFS_INODE_CAPACITY, inodeCapacity);
   storeU32(memory, TETO_CONTROL_BASE + C_VFS_DENTRY_BASE, dentryTable);
-  storeU32(memory, TETO_CONTROL_BASE + C_VFS_DENTRY_CAPACITY, TETO_VFS_DENTRY_CAPACITY);
+  storeU32(memory, TETO_CONTROL_BASE + C_VFS_DENTRY_CAPACITY, dentryCapacity);
   storeU32(memory, TETO_CONTROL_BASE + C_VFS_DATA_BASE, vfsData);
-  storeU32(memory, TETO_CONTROL_BASE + C_VFS_DATA_END, vfsData + TETO_VFS_DATA_CAPACITY);
+  storeU32(memory, TETO_CONTROL_BASE + C_VFS_DATA_END, vfsData + dataCapacity);
   storeU32(memory, TETO_CONTROL_BASE + C_VFS_DATA_NEXT, vfsData);
   storeU32(memory, TETO_CONTROL_BASE + C_VFS_INODE_COUNT, 0);
   storeU32(memory, TETO_CONTROL_BASE + C_VFS_DENTRY_COUNT, 0);
@@ -657,28 +673,31 @@ export const tetoOpenPath = (
     release(memory, proc + P_LOCK);
     return -11;
   }
+  const result = openPathLocked(memory, proc, start, path, pathLength, flags);
+  release(memory, vfsLock);
+  release(memory, proc + P_LOCK);
+  return result;
+};
+
+const openPathLocked = (
+  memory: TetoMemory, proc: Ptr, start: U32, path: Ptr, pathLength: U32, flags: U32,
+): I32 => {
+  if ((flags & 3) !== 0) return -30;
+  if ((flags & ~(OPEN_DIRECTORY | OPEN_CLOEXEC | 0x8000)) !== 0) return -22;
   const base = start === 0 ? loadU32(memory, proc + P_CWD_INODE) : start;
   const resolved = tetoVfsResolve(memory, proc, base, path, pathLength, true);
   if (resolved < 0) {
-    release(memory, vfsLock);
-    release(memory, proc + P_LOCK);
     return resolved;
   }
   const inode = wordToU32(word(resolved));
   const kind = tetoVfsKind(memory, inode);
   if ((flags & OPEN_DIRECTORY) !== 0 && kind !== TETO_VFS_KIND_DIRECTORY) {
-    release(memory, vfsLock);
-    release(memory, proc + P_LOCK);
     return -20;
   }
   if (kind !== TETO_VFS_KIND_FILE && kind !== TETO_VFS_KIND_DIRECTORY) {
-    release(memory, vfsLock);
-    release(memory, proc + P_LOCK);
     return -22;
   }
   if (!tetoVfsAccess(memory, proc, inode, kind === TETO_VFS_KIND_DIRECTORY ? 5 : 4)) {
-    release(memory, vfsLock);
-    release(memory, proc + P_LOCK);
     return -13;
   }
   const capacity = loadU32(memory, proc + P_DESCRIPTOR_CAPACITY);
@@ -687,8 +706,6 @@ export const tetoOpenPath = (
     descriptor += 1;
   }
   if (descriptor === capacity) {
-    release(memory, vfsLock);
-    release(memory, proc + P_LOCK);
     return -24;
   }
   const state = descriptorAt(memory, proc, descriptor);
@@ -698,8 +715,6 @@ export const tetoOpenPath = (
   storeU32(memory, state + FD_INODE, inode);
   storeU64(memory, state + FD_OFFSET, 0n);
   storeU32(memory, state + FD_CURSOR, 0);
-  release(memory, vfsLock);
-  release(memory, proc + P_LOCK);
   return wordToI32(word(descriptor));
 };
 
@@ -2507,6 +2522,99 @@ const fallbackSyscall = (memory: TetoMemory, hart: U32): I32 => {
   return TETO_BATCH_SYSCALL;
 };
 
+// Linux RV64 read-only file operations. The process lock precedes the VFS
+// lock, and the scratch area is never exposed directly to guest memory.
+const copyGuestPath = (memory: TetoMemory, hart: U32, address: U64, scratch: Ptr): I32 => {
+  let length: U32 = 0;
+  while (length < TETO_VFS_PATH_CAPACITY) {
+    const current = address + ux(word(length));
+    if (current < address || !guestAllowed(memory, hart, current, 1, TETO_SEGMENT_READ)) return -14;
+    const byte = guestLoadU8(memory, hart, current);
+    if (byte < 0) return -14;
+    if (byte === 0) return wordToI32(word(length));
+    storeU8(memory, scratch + length, word(byte));
+    length += 1;
+  }
+  return -36;
+};
+
+const mountedFileLocked = (memory: TetoMemory, hart: U32, proc: Ptr, number: U32): I64 => {
+  const descriptor = wordToI32(x(memory, hart, 10));
+  const scratch = loadU32(memory, TETO_CONTROL_BASE + C_VFS_SCRATCH_BASE);
+  if (number === 56) {
+    const length = copyGuestPath(memory, hart, ux(x(memory, hart, 11)), scratch);
+    if (length < 0) return word(length);
+    if (length === 0) return -2n;
+    let base: U32 = 0;
+    if (loadU8(memory, scratch) !== 47 && descriptor !== -100) {
+      if (descriptor < 0 || wordToU32(word(descriptor)) >= loadU32(memory, proc + P_DESCRIPTOR_CAPACITY)) return -9n;
+      const dir = descriptorAt(memory, proc, wordToU32(word(descriptor)));
+      const kind = loadU32(memory, dir + FD_KIND);
+      if (kind === TETO_FD_EMPTY) return -9n;
+      if (kind !== TETO_FD_DIRECTORY) return -20n;
+      base = loadU32(memory, dir + FD_INODE);
+    }
+    return word(openPathLocked(memory, proc, base, scratch, wordToU32(word(length)), wordToU32(x(memory, hart, 12))));
+  }
+  if (descriptor < 0 || wordToU32(word(descriptor)) >= loadU32(memory, proc + P_DESCRIPTOR_CAPACITY)) return -9n;
+  const state = descriptorAt(memory, proc, wordToU32(word(descriptor)));
+  const kind = loadU32(memory, state + FD_KIND);
+  if (kind === TETO_FD_EMPTY) return -9n;
+  if (number === 57) {
+    fill(memory, state, TETO_DESCRIPTOR_STRIDE, 0);
+    return 0n;
+  }
+  if (number === 63) {
+    if (kind === TETO_FD_DIRECTORY) return -21n;
+    if (kind !== TETO_FD_FILE || (loadU32(memory, state + FD_FLAGS) & TETO_FD_READ) === 0) return -9n;
+    const requested = ux(x(memory, hart, 12));
+    if (requested === 0n) return 0n;
+    const inode = loadU32(memory, state + FD_INODE);
+    const offset = loadU64(memory, state + FD_OFFSET);
+    const size = tetoVfsFileSize(memory, inode);
+    if (offset >= size) return 0n;
+    let amount = requested < size - offset ? requested : size - offset;
+    if (amount > ux(word(TETO_VFS_PATH_CAPACITY))) amount = ux(word(TETO_VFS_PATH_CAPACITY));
+    const length = wordToU32(amount);
+    const address = ux(x(memory, hart, 11));
+    if (!guestAllowed(memory, hart, address, length, TETO_SEGMENT_WRITE) ||
+        !guestWritable(memory, hart, address, length)) return -14n;
+    const result = tetoVfsReadScratch(memory, inode, offset, length);
+    if (result < 0) return word(result);
+    let copied: U32 = 0;
+    while (copied < wordToU32(word(result))) {
+      if (!guestStoreU64(memory, hart, address + ux(word(copied)), ux(word(loadU8(memory, scratch + copied))), 1)) {
+        if (copied === 0) return -14n;
+        break;
+      }
+      copied += 1;
+    }
+    storeU64(memory, state + FD_OFFSET, offset + ux(word(copied)));
+    return word(copied);
+  }
+  return -38n;
+};
+
+const mountedFileSyscall = (memory: TetoMemory, hart: U32, proc: Ptr, number: U32): I32 => {
+  if (proc === INVALID_POINTER) return internalSyscall(memory, hart, -3n);
+  if (number === 62) {
+    const descriptor = wordToU32(x(memory, hart, 10));
+    if (tetoDescriptorKind(memory, hart, descriptor) === TETO_FD_HOST) return internalSyscall(memory, hart, -29n);
+    return internalSyscall(memory, hart, tetoSeekDescriptor(memory, hart, descriptor, x(memory, hart, 11), wordToU32(x(memory, hart, 12))));
+  }
+  const lock = proc + P_LOCK;
+  const vfsLock = TETO_CONTROL_BASE + C_VFS_LOCK;
+  if (!acquire(memory, lock)) return internalSyscall(memory, hart, -11n);
+  if (!acquire(memory, vfsLock)) {
+    release(memory, lock);
+    return internalSyscall(memory, hart, -11n);
+  }
+  const result = mountedFileLocked(memory, hart, proc, number);
+  release(memory, vfsLock);
+  release(memory, lock);
+  return internalSyscall(memory, hart, result);
+};
+
 const kernelSyscall = (memory: TetoMemory, hart: U32): I32 => {
   const at = hartAt(hart);
   const proc = processForHart(memory, hart);
@@ -2526,10 +2634,40 @@ const kernelSyscall = (memory: TetoMemory, hart: U32): I32 => {
     atomicStoreI32(memory, at + H_STATUS, TETO_HART_EXITED);
     return TETO_BATCH_EXITED;
   }
+  // The mounted filesystem is authoritative, independent of the compiler target.
+  // Without a mount, the embedding system owns filesystem operations.
+  const mountedVfs = tetoVfsLoaded(memory);
+  if (mountedVfs && (number === 56 || number === 57 || number === 62 || (number === 63 && x(memory, hart, 10) !== 0n))) {
+    return mountedFileSyscall(memory, hart, proc, number);
+  }
+  // Opt-in native console. Hosted runtimes retain their existing syscall path.
+  if (number === 63 && (loadU32(memory, TETO_CONTROL_BASE + C_FLAGS) & TETO_FLAG_HOST_STDIN) !== 0) {
+    const descriptor = wordToI32(x(memory, hart, 10));
+    if (descriptor !== 0) return fallbackSyscall(memory, hart);
+    if (mountedVfs && tetoDescriptorKind(memory, hart, 0) !== TETO_FD_HOST) return internalSyscall(memory, hart, -9n);
+    if (ux(x(memory, hart, 12)) === 0n) return internalSyscall(memory, hart, 0n);
+    const address = ux(x(memory, hart, 11));
+    if (!guestAllowed(memory, hart, address, 1, TETO_SEGMENT_WRITE) ||
+        !guestWritable(memory, hart, address, 1)) return internalSyscall(memory, hart, -14n);
+    // A single-byte short read is valid; completion never writes outside it.
+    storeI32(memory, at + H_HOST_OPERATION, TETO_HOST_READ);
+    storeI32(memory, at + H_HOST_DESCRIPTOR, descriptor);
+    storeU64(memory, at + H_HOST_ADDRESS, address);
+    storeU32(memory, at + H_HOST_LENGTH, 1);
+    bump(memory, at + H_HOST_REQUESTS);
+    storeI32(memory, at + H_EVENT, TETO_EVENT_HOST);
+    atomicStoreI32(memory, at + H_STATUS, TETO_HART_WAITING);
+    if (proc !== INVALID_POINTER) atomicStoreI32(memory, proc + P_STATE, TETO_PROCESS_WAITING);
+    return TETO_BATCH_HOST;
+  }
   if (number === 64) {
     const descriptor = wordToI32(x(memory, hart, 10));
     const address = ux(x(memory, hart, 11));
     const wideLength = ux(x(memory, hart, 12));
+    if (mountedVfs) {
+      const kind = tetoDescriptorKind(memory, hart, wordToU32(word(descriptor)));
+      if (kind !== TETO_FD_HOST || (descriptor !== 1 && descriptor !== 2)) return internalSyscall(memory, hart, -9n);
+    }
     if (descriptor !== 1 && descriptor !== 2) return fallbackSyscall(memory, hart);
     if (wideLength > 1048576n) return internalSyscall(memory, hart, -22n);
     const length = wordToU32(wideLength);
@@ -2945,6 +3083,13 @@ export const tetoResumeSyscall = (memory: TetoMemory, hart: U32, result: I64): I
   return 0;
 };
 
+// Set during platform startup, before the first guest hart runs.
+export const tetoEnableHostStdin = (memory: TetoMemory): I32 => {
+  if (!tetoKernelValid(memory)) return TETO_FAULT_BAD_STATE;
+  storeU32(memory, TETO_CONTROL_BASE + C_FLAGS, loadU32(memory, TETO_CONTROL_BASE + C_FLAGS) | TETO_FLAG_HOST_STDIN);
+  return 0;
+};
+
 export const tetoResumeHost = (memory: TetoMemory, hart: U32, result: I64): I32 => {
   if (!validHart(memory, hart)) return TETO_FAULT_BAD_STATE;
   const at = hartAt(hart);
@@ -2952,6 +3097,42 @@ export const tetoResumeHost = (memory: TetoMemory, hart: U32, result: I64): I32 
   if (atomicLoadI32(memory, at + H_STATUS) !== TETO_HART_WAITING || loadI32(memory, at + H_EVENT) !== TETO_EVENT_HOST) {
     release(memory, at + H_LOCK);
     return TETO_FAULT_BAD_STATE;
+  }
+  if (loadI32(memory, at + H_HOST_OPERATION) === TETO_HOST_READ) {
+    release(memory, at + H_LOCK);
+    return TETO_FAULT_BAD_STATE;
+  }
+  setX(memory, hart, 10, result);
+  storeI32(memory, at + H_HOST_OPERATION, TETO_HOST_NONE);
+  storeI32(memory, at + H_HOST_DESCRIPTOR, -1);
+  storeU64(memory, at + H_HOST_ADDRESS, 0n);
+  storeU32(memory, at + H_HOST_LENGTH, 0);
+  storeI32(memory, at + H_EVENT, TETO_EVENT_NONE);
+  atomicStoreI32(memory, at + H_STATUS, TETO_HART_RUNNABLE);
+  const proc = processForHart(memory, hart);
+  if (proc !== INVALID_POINTER) atomicStoreI32(memory, proc + P_STATE, TETO_PROCESS_RUNNABLE);
+  release(memory, at + H_LOCK);
+  return 0;
+};
+
+// Complete a pending one-byte stdin request under the hart lock.
+// byte == -1 denotes EOF; other negative values are not accepted.
+export const tetoResumeHostRead = (memory: TetoMemory, hart: U32, byte: I32): I32 => {
+  if (!validHart(memory, hart) || byte < -1 || byte > 255) return TETO_FAULT_BAD_STATE;
+  const at = hartAt(hart);
+  if (!acquire(memory, at + H_LOCK)) return TETO_BATCH_BUSY;
+  if (atomicLoadI32(memory, at + H_STATUS) !== TETO_HART_WAITING ||
+      loadI32(memory, at + H_EVENT) !== TETO_EVENT_HOST ||
+      loadI32(memory, at + H_HOST_OPERATION) !== TETO_HOST_READ ||
+      loadU32(memory, at + H_HOST_LENGTH) !== 1) {
+    release(memory, at + H_LOCK);
+    return TETO_FAULT_BAD_STATE;
+  }
+  const address = loadU64(memory, at + H_HOST_ADDRESS);
+  let result: I64 = 0n;
+  if (byte >= 0) {
+    result = guestAllowed(memory, hart, address, 1, TETO_SEGMENT_WRITE) &&
+      guestStoreU64(memory, hart, address, ux(word(byte)), 1) ? 1n : -14n;
   }
   setX(memory, hart, 10, result);
   storeI32(memory, at + H_HOST_OPERATION, TETO_HOST_NONE);
