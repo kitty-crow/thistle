@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { directMemory, storeU8, storeU32, loadU8 } from "../native/memory.js";
-import { TETO_BATCH_BUDGET, TETO_SEGMENT_READ, TETO_SEGMENT_WRITE, TETO_SEGMENT_EXECUTE } from "../native/abi.js";
+import { TETO_BATCH_BUDGET, TETO_BATCH_SYSCALL, TETO_SEGMENT_READ, TETO_SEGMENT_WRITE, TETO_SEGMENT_EXECUTE } from "../native/abi.js";
 import { tetoKernelInit, tetoHartInit, tetoProcessInit, tetoImageReserve, tetoImageRelease, tetoImageBegin,
   tetoImageSegment, tetoImageFinish, tetoHartSetPc, tetoHartSetX, tetoHartGetX, tetoRunRv64Batch,
-  tetoGuestPage, tetoEnableNativeVfs } from "../native/kernel.js";
+  tetoGuestPage } from "../native/kernel.js";
 import { tetoLoadVfs } from "../native/vfs.js";
 
-test("native guest opens, reads, seeks and closes a committed VFS file", () => {
+for (const mounted of [true, false]) test(`guest file syscalls ${mounted ? "use the mounted VFS" : "delegate without a mount"}`, () => {
   const memory = directMemory(64 * 1024 * 1024);
   assert.equal(tetoKernelInit(memory, 1, false), 0);
   const image = new Uint8Array(32 + 56 + 60 + 20);
@@ -23,9 +23,8 @@ test("native guest opens, reads, seeks and closes a committed VFS file", () => {
   put(24, checksum);
   const input = tetoImageReserve(memory, image.length);
   for (let i = 0; i < image.length; i++) storeU8(memory, input + i, BigInt(image[i]!));
-  assert.equal(tetoLoadVfs(memory, input, image.length), 0);
+  if (mounted) assert.equal(tetoLoadVfs(memory, input, image.length), 0);
   assert.equal(tetoImageRelease(memory, input, image.length), 0);
-  assert.equal(tetoEnableNativeVfs(memory), 0);
   assert.equal(tetoHartInit(memory, 0, 0x10000000n, 0x200000n), 0);
   assert.equal(tetoProcessInit(memory, 0, 1, 0, 0, 0, 0, 0, 0, 0), 0);
   const code = tetoImageReserve(memory, 16);
@@ -43,6 +42,13 @@ test("native guest opens, reads, seeks and closes a committed VFS file", () => {
     assert.equal(tetoRunRv64Batch(memory, 0, 1, 0n, -1), TETO_BATCH_BUDGET);
     return tetoHartGetX(memory, 0, 10);
   };
+  if (!mounted) {
+    tetoHartSetX(memory, 0, 17, 56n);
+    tetoHartSetX(memory, 0, 10, -100n);
+    tetoHartSetX(memory, 0, 11, 0x210000n);
+    assert.equal(tetoRunRv64Batch(memory, 0, 1, 0n, -1), TETO_BATCH_SYSCALL);
+    return;
+  }
   assert.equal(call(56, -100n, 0x210000n, 1n), -30n);
   assert.equal(call(56, -100n, 0x220000n), -14n);
   const fd = call(56, -100n, 0x210000n);

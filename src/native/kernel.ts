@@ -128,7 +128,6 @@ import {
   TETO_FAULT_MEMORY,
   TETO_FLAG_THREADED,
   TETO_FLAG_HOST_STDIN,
-  TETO_FLAG_NATIVE_VFS,
   TETO_GUEST_PAGE_SIZE,
   TETO_GROUP_CAPACITY,
   TETO_HART_BASE,
@@ -2527,7 +2526,7 @@ const copyGuestPath = (memory: TetoMemory, hart: U32, address: U64, scratch: Ptr
   return -36;
 };
 
-const nativeFileLocked = (memory: TetoMemory, hart: U32, proc: Ptr, number: U32): I64 => {
+const mountedFileLocked = (memory: TetoMemory, hart: U32, proc: Ptr, number: U32): I64 => {
   const descriptor = wordToI32(x(memory, hart, 10));
   const scratch = loadU32(memory, TETO_CONTROL_BASE + C_VFS_SCRATCH_BASE);
   if (number === 56) {
@@ -2584,7 +2583,7 @@ const nativeFileLocked = (memory: TetoMemory, hart: U32, proc: Ptr, number: U32)
   return -38n;
 };
 
-const nativeFileSyscall = (memory: TetoMemory, hart: U32, proc: Ptr, number: U32): I32 => {
+const mountedFileSyscall = (memory: TetoMemory, hart: U32, proc: Ptr, number: U32): I32 => {
   if (proc === INVALID_POINTER) return internalSyscall(memory, hart, -3n);
   if (number === 62) {
     const descriptor = wordToU32(x(memory, hart, 10));
@@ -2598,7 +2597,7 @@ const nativeFileSyscall = (memory: TetoMemory, hart: U32, proc: Ptr, number: U32
     release(memory, lock);
     return internalSyscall(memory, hart, -11n);
   }
-  const result = nativeFileLocked(memory, hart, proc, number);
+  const result = mountedFileLocked(memory, hart, proc, number);
   release(memory, vfsLock);
   release(memory, lock);
   return internalSyscall(memory, hart, result);
@@ -2623,15 +2622,17 @@ const kernelSyscall = (memory: TetoMemory, hart: U32): I32 => {
     atomicStoreI32(memory, at + H_STATUS, TETO_HART_EXITED);
     return TETO_BATCH_EXITED;
   }
-  const nativeVfs = (loadU32(memory, TETO_CONTROL_BASE + C_FLAGS) & TETO_FLAG_NATIVE_VFS) !== 0;
-  if (nativeVfs && (number === 56 || number === 57 || number === 62 || (number === 63 && x(memory, hart, 10) !== 0n))) {
-    return nativeFileSyscall(memory, hart, proc, number);
+  // The mounted filesystem is authoritative, independent of the compiler target.
+  // Without a mount, the embedding system owns filesystem operations.
+  const mountedVfs = tetoVfsLoaded(memory);
+  if (mountedVfs && (number === 56 || number === 57 || number === 62 || (number === 63 && x(memory, hart, 10) !== 0n))) {
+    return mountedFileSyscall(memory, hart, proc, number);
   }
   // Opt-in native console. Hosted runtimes retain their existing syscall path.
   if (number === 63 && (loadU32(memory, TETO_CONTROL_BASE + C_FLAGS) & TETO_FLAG_HOST_STDIN) !== 0) {
     const descriptor = wordToI32(x(memory, hart, 10));
     if (descriptor !== 0) return fallbackSyscall(memory, hart);
-    if (nativeVfs && tetoDescriptorKind(memory, hart, 0) !== TETO_FD_HOST) return internalSyscall(memory, hart, -9n);
+    if (mountedVfs && tetoDescriptorKind(memory, hart, 0) !== TETO_FD_HOST) return internalSyscall(memory, hart, -9n);
     if (ux(x(memory, hart, 12)) === 0n) return internalSyscall(memory, hart, 0n);
     const address = ux(x(memory, hart, 11));
     if (!guestAllowed(memory, hart, address, 1, TETO_SEGMENT_WRITE) ||
@@ -2651,7 +2652,7 @@ const kernelSyscall = (memory: TetoMemory, hart: U32): I32 => {
     const descriptor = wordToI32(x(memory, hart, 10));
     const address = ux(x(memory, hart, 11));
     const wideLength = ux(x(memory, hart, 12));
-    if (nativeVfs) {
+    if (mountedVfs) {
       const kind = tetoDescriptorKind(memory, hart, wordToU32(word(descriptor)));
       if (kind !== TETO_FD_HOST || (descriptor !== 1 && descriptor !== 2)) return internalSyscall(memory, hart, -9n);
     }
@@ -3067,13 +3068,6 @@ export const tetoResumeSyscall = (memory: TetoMemory, hart: U32, result: I64): I
   const proc = processForHart(memory, hart);
   if (proc !== INVALID_POINTER) atomicStoreI32(memory, proc + P_STATE, TETO_PROCESS_RUNNABLE);
   release(memory, at + H_LOCK);
-  return 0;
-};
-
-// Native VFS is opt-in until hosted descriptor ownership is unified.
-export const tetoEnableNativeVfs = (memory: TetoMemory): I32 => {
-  if (!tetoKernelValid(memory) || !tetoVfsLoaded(memory)) return TETO_FAULT_BAD_STATE;
-  storeU32(memory, TETO_CONTROL_BASE + C_FLAGS, loadU32(memory, TETO_CONTROL_BASE + C_FLAGS) | TETO_FLAG_NATIVE_VFS);
   return 0;
 };
 
