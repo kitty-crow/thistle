@@ -255,7 +255,7 @@ const sectionFlags = (memory: TetoMemory): U32 => {
   let index: U32 = 0;
   while (index < length) {
     const value = loadU8(memory, at + index);
-    let flag: U32 = 0;
+    let flag: U32;
     if (value === 0x72) flag = TETO_SEGMENT_READ;
     else if (value === 0x77) flag = TETO_SEGMENT_WRITE;
     else if (value === 0x78) flag = TETO_SEGMENT_EXECUTE;

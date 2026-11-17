@@ -1,8 +1,7 @@
 import type { F32, F64, I32, I64, Ptr, U32, U64 } from "./types.js";
+import type { TetoMemory } from "./memory.js";
 
 const MASK32 = 0xffffffffn;
-const floatBuffer = new ArrayBuffer(8);
-const floatView = new DataView(floatBuffer);
 
 export const word = (value: I32 | U32): I64 => BigInt(value);
 export const sx = (value: I64 | U64, bits: I32): I64 => BigInt.asIntN(bits, value);
@@ -18,24 +17,25 @@ export const wordToPtr = (value: I64 | U64): Ptr => {
   return Number(unsigned);
 };
 
-export const bitsToF32 = (value: U64): F32 => {
-  floatView.setUint32(0, Number(value & MASK32), true);
-  return floatView.getFloat32(0, true);
+// The caller owns the eight-byte scratch range for the duration of each conversion.
+export const bitsToF32 = (memory: TetoMemory, scratch: Ptr, value: U64): F32 => {
+  memory.view.setUint32(scratch, Number(value & MASK32), true);
+  return memory.view.getFloat32(scratch, true);
 };
 
-export const bitsToF64 = (value: U64): F64 => {
-  floatView.setBigUint64(0, ux(value), true);
-  return floatView.getFloat64(0, true);
+export const bitsToF64 = (memory: TetoMemory, scratch: Ptr, value: U64): F64 => {
+  memory.view.setBigUint64(scratch, ux(value), true);
+  return memory.view.getFloat64(scratch, true);
 };
 
-export const f32ToBits = (value: F32 | F64): U64 => {
-  floatView.setFloat32(0, Math.fround(value), true);
-  return BigInt(floatView.getUint32(0, true));
+export const f32ToBits = (memory: TetoMemory, scratch: Ptr, value: F32 | F64): U64 => {
+  memory.view.setFloat32(scratch, Math.fround(value), true);
+  return BigInt(memory.view.getUint32(scratch, true));
 };
 
-export const f64ToBits = (value: F64): U64 => {
-  floatView.setFloat64(0, value, true);
-  return floatView.getBigUint64(0, true);
+export const f64ToBits = (memory: TetoMemory, scratch: Ptr, value: F64): U64 => {
+  memory.view.setFloat64(scratch, value, true);
+  return memory.view.getBigUint64(scratch, true);
 };
 
 export const roundF32 = (value: F64): F32 => Math.fround(value);

@@ -115,6 +115,8 @@ export const H_IMAGE_BYTES: U32 = 888;
 export const H_STACK_BOTTOM: U32 = 896;
 export const H_STACK_POINTER: U32 = 904;
 export const H_STARTUP_LOADS: U32 = 912;
+// Eight bytes of private conversion scratch, protected by H_LOCK.
+export const H_FLOAT_SCRATCH: U32 = 920;
 
 export const TETO_PROCESS_STRIDE: U32 = 352;
 export const P_LOCK: U32 = 0;
