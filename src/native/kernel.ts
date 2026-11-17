@@ -230,6 +230,9 @@ import {
   TETO_VFS_DENTRY_STRIDE,
   TETO_VFS_INODE_CAPACITY,
   TETO_VFS_INODE_STRIDE,
+  TETO_VFS_MAX_INODE_CAPACITY,
+  TETO_VFS_MAX_DENTRY_CAPACITY,
+  TETO_VFS_MAX_DATA_CAPACITY,
   TETO_VFS_KIND_DIRECTORY,
   TETO_VFS_KIND_FILE,
   TETO_VFS_PATH_CAPACITY,
@@ -417,7 +420,16 @@ const acquire = (memory: TetoMemory, at: Ptr): boolean =>
 
 const release = (memory: TetoMemory, at: Ptr): void => atomicStoreI32(memory, at, 0);
 
-export const tetoKernelInit = (memory: TetoMemory, maxHarts: U32, threaded: boolean): I32 => {
+export const tetoKernelInit = (memory: TetoMemory, maxHarts: U32, threaded: boolean): I32 =>
+  tetoKernelInitWithVfs(memory, maxHarts, threaded, TETO_VFS_INODE_CAPACITY, TETO_VFS_DENTRY_CAPACITY, TETO_VFS_DATA_CAPACITY);
+
+export const tetoKernelInitWithVfs = (
+  memory: TetoMemory, maxHarts: U32, threaded: boolean,
+  inodeCapacity: U32, dentryCapacity: U32, dataCapacity: U32,
+): I32 => {
+  if (inodeCapacity < 2 || inodeCapacity > TETO_VFS_MAX_INODE_CAPACITY ||
+      dentryCapacity < 1 || dentryCapacity > TETO_VFS_MAX_DENTRY_CAPACITY ||
+      dataCapacity < 4096 || dataCapacity > TETO_VFS_MAX_DATA_CAPACITY) return TETO_FAULT_BAD_STATE;
   if (maxHarts < 1 || maxHarts > 1024) return TETO_FAULT_BAD_STATE;
   const hartEnd = TETO_HART_BASE + maxHarts * TETO_HART_STRIDE;
   const processCapacity = maxHarts > 32 ? 256 : maxHarts * 8;
@@ -429,12 +441,12 @@ export const tetoKernelInit = (memory: TetoMemory, maxHarts: U32, threaded: bool
   const mapBytes = processCapacity * TETO_MAP_CAPACITY * TETO_MAP_STRIDE;
   const vfsScratch = pageAlign(mapTables + mapBytes);
   const inodeTable = pageAlign(vfsScratch + TETO_VFS_PATH_CAPACITY);
-  const dentryTable = pageAlign(inodeTable + TETO_VFS_INODE_CAPACITY * TETO_VFS_INODE_STRIDE);
-  const descriptorTables = pageAlign(dentryTable + TETO_VFS_DENTRY_CAPACITY * TETO_VFS_DENTRY_STRIDE);
+  const dentryTable = pageAlign(inodeTable + inodeCapacity * TETO_VFS_INODE_STRIDE);
+  const descriptorTables = pageAlign(dentryTable + dentryCapacity * TETO_VFS_DENTRY_STRIDE);
   const descriptorBytes = processCapacity * TETO_DESCRIPTOR_CAPACITY * TETO_DESCRIPTOR_STRIDE;
   const processTable = pageAlign(descriptorTables + descriptorBytes);
   const vfsData = pageAlign(processTable + processCapacity * TETO_PROCESS_STRIDE);
-  const physical = pageAlign(vfsData + TETO_VFS_DATA_CAPACITY);
+  const physical = pageAlign(vfsData + dataCapacity);
   const total = memorySizeOf(memory);
   if (physical < pageTables || physical > total || total - physical < TETO_GUEST_PAGE_SIZE) return TETO_FAULT_MEMORY;
   fill(memory, TETO_CONTROL_BASE, physical, 0);
@@ -450,11 +462,11 @@ export const tetoKernelInit = (memory: TetoMemory, maxHarts: U32, threaded: bool
   storeU32(memory, TETO_CONTROL_BASE + C_MAP_CAPACITY, TETO_MAP_CAPACITY);
   storeU32(memory, TETO_CONTROL_BASE + C_VFS_SCRATCH_BASE, vfsScratch);
   storeU32(memory, TETO_CONTROL_BASE + C_VFS_INODE_BASE, inodeTable);
-  storeU32(memory, TETO_CONTROL_BASE + C_VFS_INODE_CAPACITY, TETO_VFS_INODE_CAPACITY);
+  storeU32(memory, TETO_CONTROL_BASE + C_VFS_INODE_CAPACITY, inodeCapacity);
   storeU32(memory, TETO_CONTROL_BASE + C_VFS_DENTRY_BASE, dentryTable);
-  storeU32(memory, TETO_CONTROL_BASE + C_VFS_DENTRY_CAPACITY, TETO_VFS_DENTRY_CAPACITY);
+  storeU32(memory, TETO_CONTROL_BASE + C_VFS_DENTRY_CAPACITY, dentryCapacity);
   storeU32(memory, TETO_CONTROL_BASE + C_VFS_DATA_BASE, vfsData);
-  storeU32(memory, TETO_CONTROL_BASE + C_VFS_DATA_END, vfsData + TETO_VFS_DATA_CAPACITY);
+  storeU32(memory, TETO_CONTROL_BASE + C_VFS_DATA_END, vfsData + dataCapacity);
   storeU32(memory, TETO_CONTROL_BASE + C_VFS_DATA_NEXT, vfsData);
   storeU32(memory, TETO_CONTROL_BASE + C_VFS_INODE_COUNT, 0);
   storeU32(memory, TETO_CONTROL_BASE + C_VFS_DENTRY_COUNT, 0);

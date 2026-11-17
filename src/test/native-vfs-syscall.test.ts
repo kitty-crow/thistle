@@ -2,14 +2,14 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { directMemory, storeU8, storeU32, loadU8 } from "../native/memory.js";
 import { TETO_BATCH_BUDGET, TETO_BATCH_SYSCALL, TETO_SEGMENT_READ, TETO_SEGMENT_WRITE, TETO_SEGMENT_EXECUTE } from "../native/abi.js";
-import { tetoKernelInit, tetoHartInit, tetoProcessInit, tetoImageReserve, tetoImageRelease, tetoImageBegin,
+import { tetoKernelInit, tetoKernelInitWithVfs, tetoHartInit, tetoProcessInit, tetoImageReserve, tetoImageRelease, tetoImageBegin,
   tetoImageSegment, tetoImageFinish, tetoHartSetPc, tetoHartSetX, tetoHartGetX, tetoRunRv64Batch,
   tetoGuestPage } from "../native/kernel.js";
 import { tetoLoadVfs } from "../native/vfs.js";
 
 for (const mounted of [true, false]) test(`guest file syscalls ${mounted ? "use the mounted VFS" : "delegate without a mount"}`, () => {
   const memory = directMemory(64 * 1024 * 1024);
-  assert.equal(tetoKernelInit(memory, 1, false), 0);
+  assert.equal(mounted ? tetoKernelInitWithVfs(memory, 1, false, 8192, 16384, 24 * 1024 * 1024) : tetoKernelInit(memory, 1, false), 0);
   const image = new Uint8Array(32 + 56 + 60 + 20);
   const v = new DataView(image.buffer);
   const put = (at: number, n: number): void => v.setUint32(at, n, true);
