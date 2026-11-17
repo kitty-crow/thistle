@@ -17,6 +17,8 @@ import {
   C_VFS_INODE_COUNT,
   C_VFS_LOADED,
   C_VFS_ROOT,
+  C_VFS_SCRATCH_BASE,
+  TETO_VFS_PATH_CAPACITY,
   D_FLAGS,
   D_INODE,
   D_NAME,
@@ -309,16 +311,28 @@ export const tetoVfsResolve = (
 export const tetoVfsAccess = (memory: TetoMemory, proc: Ptr, inode: U32, bits: U32): boolean =>
   tetoVfsKind(memory, inode) !== TETO_VFS_KIND_EMPTY && bits <= 7 && allowed(memory, proc, inode, bits);
 
-export const tetoVfsReadData = (memory: TetoMemory, inode: U32, offset: U64, output: Ptr, length: U32): I32 => {
+const readData = (memory: TetoMemory, inode: U32, offset: U64, output: Ptr, length: U32): I32 => {
   const kind = tetoVfsKind(memory, inode);
-  if ((kind !== TETO_VFS_KIND_FILE && kind !== TETO_VFS_KIND_LINK) || !inputContains(memory, output, length)) return -22;
+  if (kind !== TETO_VFS_KIND_FILE && kind !== TETO_VFS_KIND_LINK) return -22;
   const state = inodeAt(memory, inode);
   const size = loadU64(memory, state + V_SIZE);
-  if (offset > size) return -22;
+  if (offset >= size) return 0;
   const available = size - offset;
   const amount = available < ux(word(length)) ? wordToU32(available) : length;
   if (amount !== 0) copyMemory(memory, output, loadU32(memory, state + V_DATA) + wordToU32(offset), amount);
   return wordToU32(word(amount));
+};
+
+export const tetoVfsReadData = (memory: TetoMemory, inode: U32, offset: U64, output: Ptr, length: U32): I32 => {
+  if (!inputContains(memory, output, length)) return -22;
+  return readData(memory, inode, offset, output, length);
+};
+
+// The caller holds the VFS lock. The destination is the fixed kernel scratch arena.
+export const tetoVfsReadScratch = (memory: TetoMemory, inode: U32, offset: U64, length: U32): I32 => {
+  const output = loadU32(memory, TETO_CONTROL_BASE + C_VFS_SCRATCH_BASE);
+  if (length > TETO_VFS_PATH_CAPACITY || !memoryContains(memory, output, length)) return -22;
+  return readData(memory, inode, offset, output, length);
 };
 
 export const tetoLoadVfs = (memory: TetoMemory, image: Ptr, imageLength: U32): I32 => {

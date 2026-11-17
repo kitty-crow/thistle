@@ -128,6 +128,7 @@ import {
   TETO_FAULT_MEMORY,
   TETO_FLAG_THREADED,
   TETO_FLAG_HOST_STDIN,
+  TETO_FLAG_NATIVE_VFS,
   TETO_GUEST_PAGE_SIZE,
   TETO_GROUP_CAPACITY,
   TETO_HART_BASE,
@@ -310,6 +311,8 @@ import {
   tetoVfsFileSize,
   tetoVfsKind,
   tetoVfsReadData,
+  tetoVfsReadScratch,
+  tetoVfsLoaded,
   tetoVfsResolve,
   tetoVfsRoot,
 } from "./vfs.js";
@@ -659,28 +662,31 @@ export const tetoOpenPath = (
     release(memory, proc + P_LOCK);
     return -11;
   }
+  const result = openPathLocked(memory, proc, start, path, pathLength, flags);
+  release(memory, vfsLock);
+  release(memory, proc + P_LOCK);
+  return result;
+};
+
+const openPathLocked = (
+  memory: TetoMemory, proc: Ptr, start: U32, path: Ptr, pathLength: U32, flags: U32,
+): I32 => {
+  if ((flags & 3) !== 0) return -30;
+  if ((flags & ~(OPEN_DIRECTORY | OPEN_CLOEXEC | 0x8000)) !== 0) return -22;
   const base = start === 0 ? loadU32(memory, proc + P_CWD_INODE) : start;
   const resolved = tetoVfsResolve(memory, proc, base, path, pathLength, true);
   if (resolved < 0) {
-    release(memory, vfsLock);
-    release(memory, proc + P_LOCK);
     return resolved;
   }
   const inode = wordToU32(word(resolved));
   const kind = tetoVfsKind(memory, inode);
   if ((flags & OPEN_DIRECTORY) !== 0 && kind !== TETO_VFS_KIND_DIRECTORY) {
-    release(memory, vfsLock);
-    release(memory, proc + P_LOCK);
     return -20;
   }
   if (kind !== TETO_VFS_KIND_FILE && kind !== TETO_VFS_KIND_DIRECTORY) {
-    release(memory, vfsLock);
-    release(memory, proc + P_LOCK);
     return -22;
   }
   if (!tetoVfsAccess(memory, proc, inode, kind === TETO_VFS_KIND_DIRECTORY ? 5 : 4)) {
-    release(memory, vfsLock);
-    release(memory, proc + P_LOCK);
     return -13;
   }
   const capacity = loadU32(memory, proc + P_DESCRIPTOR_CAPACITY);
@@ -689,8 +695,6 @@ export const tetoOpenPath = (
     descriptor += 1;
   }
   if (descriptor === capacity) {
-    release(memory, vfsLock);
-    release(memory, proc + P_LOCK);
     return -24;
   }
   const state = descriptorAt(memory, proc, descriptor);
@@ -700,8 +704,6 @@ export const tetoOpenPath = (
   storeU32(memory, state + FD_INODE, inode);
   storeU64(memory, state + FD_OFFSET, 0n);
   storeU32(memory, state + FD_CURSOR, 0);
-  release(memory, vfsLock);
-  release(memory, proc + P_LOCK);
   return wordToI32(word(descriptor));
 };
 
@@ -2509,6 +2511,99 @@ const fallbackSyscall = (memory: TetoMemory, hart: U32): I32 => {
   return TETO_BATCH_SYSCALL;
 };
 
+// Linux RV64 read-only file operations. The process lock precedes the VFS
+// lock, and the scratch area is never exposed directly to guest memory.
+const copyGuestPath = (memory: TetoMemory, hart: U32, address: U64, scratch: Ptr): I32 => {
+  let length: U32 = 0;
+  while (length < TETO_VFS_PATH_CAPACITY) {
+    const current = address + ux(word(length));
+    if (current < address || !guestAllowed(memory, hart, current, 1, TETO_SEGMENT_READ)) return -14;
+    const byte = guestLoadU8(memory, hart, current);
+    if (byte < 0) return -14;
+    if (byte === 0) return wordToI32(word(length));
+    storeU8(memory, scratch + length, word(byte));
+    length += 1;
+  }
+  return -36;
+};
+
+const nativeFileLocked = (memory: TetoMemory, hart: U32, proc: Ptr, number: U32): I64 => {
+  const descriptor = wordToI32(x(memory, hart, 10));
+  const scratch = loadU32(memory, TETO_CONTROL_BASE + C_VFS_SCRATCH_BASE);
+  if (number === 56) {
+    const length = copyGuestPath(memory, hart, ux(x(memory, hart, 11)), scratch);
+    if (length < 0) return word(length);
+    if (length === 0) return -2n;
+    let base: U32 = 0;
+    if (loadU8(memory, scratch) !== 47 && descriptor !== -100) {
+      if (descriptor < 0 || wordToU32(word(descriptor)) >= loadU32(memory, proc + P_DESCRIPTOR_CAPACITY)) return -9n;
+      const dir = descriptorAt(memory, proc, wordToU32(word(descriptor)));
+      const kind = loadU32(memory, dir + FD_KIND);
+      if (kind === TETO_FD_EMPTY) return -9n;
+      if (kind !== TETO_FD_DIRECTORY) return -20n;
+      base = loadU32(memory, dir + FD_INODE);
+    }
+    return word(openPathLocked(memory, proc, base, scratch, wordToU32(word(length)), wordToU32(x(memory, hart, 12))));
+  }
+  if (descriptor < 0 || wordToU32(word(descriptor)) >= loadU32(memory, proc + P_DESCRIPTOR_CAPACITY)) return -9n;
+  const state = descriptorAt(memory, proc, wordToU32(word(descriptor)));
+  const kind = loadU32(memory, state + FD_KIND);
+  if (kind === TETO_FD_EMPTY) return -9n;
+  if (number === 57) {
+    fill(memory, state, TETO_DESCRIPTOR_STRIDE, 0);
+    return 0n;
+  }
+  if (number === 63) {
+    if (kind === TETO_FD_DIRECTORY) return -21n;
+    if (kind !== TETO_FD_FILE || (loadU32(memory, state + FD_FLAGS) & TETO_FD_READ) === 0) return -9n;
+    const requested = ux(x(memory, hart, 12));
+    if (requested === 0n) return 0n;
+    const inode = loadU32(memory, state + FD_INODE);
+    const offset = loadU64(memory, state + FD_OFFSET);
+    const size = tetoVfsFileSize(memory, inode);
+    if (offset >= size) return 0n;
+    let amount = requested < size - offset ? requested : size - offset;
+    if (amount > ux(word(TETO_VFS_PATH_CAPACITY))) amount = ux(word(TETO_VFS_PATH_CAPACITY));
+    const length = wordToU32(amount);
+    const address = ux(x(memory, hart, 11));
+    if (!guestAllowed(memory, hart, address, length, TETO_SEGMENT_WRITE) ||
+        !guestWritable(memory, hart, address, length)) return -14n;
+    const result = tetoVfsReadScratch(memory, inode, offset, length);
+    if (result < 0) return word(result);
+    let copied: U32 = 0;
+    while (copied < wordToU32(word(result))) {
+      if (!guestStoreU64(memory, hart, address + ux(word(copied)), ux(word(loadU8(memory, scratch + copied))), 1)) {
+        if (copied === 0) return -14n;
+        break;
+      }
+      copied += 1;
+    }
+    storeU64(memory, state + FD_OFFSET, offset + ux(word(copied)));
+    return word(copied);
+  }
+  return -38n;
+};
+
+const nativeFileSyscall = (memory: TetoMemory, hart: U32, proc: Ptr, number: U32): I32 => {
+  if (proc === INVALID_POINTER) return internalSyscall(memory, hart, -3n);
+  if (number === 62) {
+    const descriptor = wordToU32(x(memory, hart, 10));
+    if (tetoDescriptorKind(memory, hart, descriptor) === TETO_FD_HOST) return internalSyscall(memory, hart, -29n);
+    return internalSyscall(memory, hart, tetoSeekDescriptor(memory, hart, descriptor, x(memory, hart, 11), wordToU32(x(memory, hart, 12))));
+  }
+  const lock = proc + P_LOCK;
+  const vfsLock = TETO_CONTROL_BASE + C_VFS_LOCK;
+  if (!acquire(memory, lock)) return internalSyscall(memory, hart, -11n);
+  if (!acquire(memory, vfsLock)) {
+    release(memory, lock);
+    return internalSyscall(memory, hart, -11n);
+  }
+  const result = nativeFileLocked(memory, hart, proc, number);
+  release(memory, vfsLock);
+  release(memory, lock);
+  return internalSyscall(memory, hart, result);
+};
+
 const kernelSyscall = (memory: TetoMemory, hart: U32): I32 => {
   const at = hartAt(hart);
   const proc = processForHart(memory, hart);
@@ -2528,10 +2623,15 @@ const kernelSyscall = (memory: TetoMemory, hart: U32): I32 => {
     atomicStoreI32(memory, at + H_STATUS, TETO_HART_EXITED);
     return TETO_BATCH_EXITED;
   }
+  const nativeVfs = (loadU32(memory, TETO_CONTROL_BASE + C_FLAGS) & TETO_FLAG_NATIVE_VFS) !== 0;
+  if (nativeVfs && (number === 56 || number === 57 || number === 62 || (number === 63 && x(memory, hart, 10) !== 0n))) {
+    return nativeFileSyscall(memory, hart, proc, number);
+  }
   // Opt-in native console. Hosted runtimes retain their existing syscall path.
   if (number === 63 && (loadU32(memory, TETO_CONTROL_BASE + C_FLAGS) & TETO_FLAG_HOST_STDIN) !== 0) {
     const descriptor = wordToI32(x(memory, hart, 10));
     if (descriptor !== 0) return fallbackSyscall(memory, hart);
+    if (nativeVfs && tetoDescriptorKind(memory, hart, 0) !== TETO_FD_HOST) return internalSyscall(memory, hart, -9n);
     if (ux(x(memory, hart, 12)) === 0n) return internalSyscall(memory, hart, 0n);
     const address = ux(x(memory, hart, 11));
     if (!guestAllowed(memory, hart, address, 1, TETO_SEGMENT_WRITE) ||
@@ -2551,6 +2651,10 @@ const kernelSyscall = (memory: TetoMemory, hart: U32): I32 => {
     const descriptor = wordToI32(x(memory, hart, 10));
     const address = ux(x(memory, hart, 11));
     const wideLength = ux(x(memory, hart, 12));
+    if (nativeVfs) {
+      const kind = tetoDescriptorKind(memory, hart, wordToU32(word(descriptor)));
+      if (kind !== TETO_FD_HOST || (descriptor !== 1 && descriptor !== 2)) return internalSyscall(memory, hart, -9n);
+    }
     if (descriptor !== 1 && descriptor !== 2) return fallbackSyscall(memory, hart);
     if (wideLength > 1048576n) return internalSyscall(memory, hart, -22n);
     const length = wordToU32(wideLength);
@@ -2963,6 +3067,13 @@ export const tetoResumeSyscall = (memory: TetoMemory, hart: U32, result: I64): I
   const proc = processForHart(memory, hart);
   if (proc !== INVALID_POINTER) atomicStoreI32(memory, proc + P_STATE, TETO_PROCESS_RUNNABLE);
   release(memory, at + H_LOCK);
+  return 0;
+};
+
+// Native VFS is opt-in until hosted descriptor ownership is unified.
+export const tetoEnableNativeVfs = (memory: TetoMemory): I32 => {
+  if (!tetoKernelValid(memory) || !tetoVfsLoaded(memory)) return TETO_FAULT_BAD_STATE;
+  storeU32(memory, TETO_CONTROL_BASE + C_FLAGS, loadU32(memory, TETO_CONTROL_BASE + C_FLAGS) | TETO_FLAG_NATIVE_VFS);
   return 0;
 };
 
