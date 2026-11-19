@@ -1,4 +1,5 @@
 import { bad, KErr } from "./err.js";
+import { emptyStart } from "./kernel.js";
 import type { Kern, PInfo, Start } from "./kernel.js";
 import { Fd, Proc } from "./proc.js";
 import type { Sig } from "./proc.js";
@@ -13,13 +14,13 @@ export class Sys {
   get pid(): number { return this.p.pid; }
   get ppid(): number { return this.p.ppid; }
   get uid(): number { return this.ruid; }
-  get euid(): number { return this.p.cred.euid ?? credUid(this.p.cred); }
-  get suid(): number { return this.p.cred.suid ?? this.euid; }
-  get ruid(): number { return this.p.cred.ruid ?? this.p.cred.uid ?? this.euid; }
+  get euid(): number { return this.p.cred.euid; }
+  get suid(): number { return this.p.cred.suid; }
+  get ruid(): number { return this.p.cred.ruid; }
   get gid(): number { return this.rgid; }
-  get egid(): number { return this.p.cred.egid ?? credGid(this.p.cred); }
-  get sgid(): number { return this.p.cred.sgid ?? this.egid; }
-  get rgid(): number { return this.p.cred.rgid ?? this.p.cred.gid ?? this.egid; }
+  get egid(): number { return this.p.cred.egid; }
+  get sgid(): number { return this.p.cred.sgid; }
+  get rgid(): number { return this.p.cred.rgid; }
   get groups(): number[] { return [...this.p.cred.groups]; }
   get cwd(): string { return this.p.cwd; }
   get umask(): number { return this.p.mask; }
@@ -29,14 +30,14 @@ export class Sys {
   private get privileged(): boolean { return this.euid === 0; }
 
   private validId(n: number): boolean { return Number.isInteger(n) && n >= 0 && n < 0xffffffff; }
-  private requested(id: number | undefined): id is number { return id !== undefined; }
+  private requested(id: number | null): id is number { return id !== null; }
   private canSetUid(id: number): boolean { return this.privileged || id === this.ruid || id === this.euid || id === this.suid; }
   private canSetGid(id: number): boolean { return this.privileged || id === this.rgid || id === this.egid || id === this.sgid; }
-  private ids(a: Array<number | undefined>, group = false): void {
+  private ids(a: Array<number | null>, group = false): void {
     for (const id of a) if (this.requested(id) && (!this.validId(id) || !(group ? this.canSetGid(id) : this.canSetUid(id)))) bad("EPERM", String(id));
   }
 
-  setResuid(ruid?: number, euid?: number, suid?: number): void {
+  setResuid(ruid: number | null = null, euid: number | null = null, suid: number | null = null): void {
     this.ids([ruid, euid, suid]);
     const next = { ruid: this.ruid, euid: this.euid, suid: this.suid };
     if (this.requested(ruid)) next.ruid = ruid;
@@ -46,7 +47,7 @@ export class Sys {
     this.p.fsuid = next.euid;
   }
 
-  setResgid(rgid?: number, egid?: number, sgid?: number): void {
+  setResgid(rgid: number | null = null, egid: number | null = null, sgid: number | null = null): void {
     this.ids([rgid, egid, sgid], true);
     const next = { rgid: this.rgid, egid: this.egid, sgid: this.sgid };
     if (this.requested(rgid)) next.rgid = rgid;
@@ -56,7 +57,7 @@ export class Sys {
     this.p.fsgid = next.egid;
   }
 
-  setReuid(ruid?: number, euid?: number): void {
+  setReuid(ruid: number | null = null, euid: number | null = null): void {
     const oldRuid = this.ruid;
     this.ids([ruid, euid]);
     const nextR = this.requested(ruid) ? ruid : this.ruid;
@@ -66,7 +67,7 @@ export class Sys {
     this.p.fsuid = nextE;
   }
 
-  setRegid(rgid?: number, egid?: number): void {
+  setRegid(rgid: number | null = null, egid: number | null = null): void {
     const oldRgid = this.rgid;
     this.ids([rgid, egid], true);
     const nextR = this.requested(rgid) ? rgid : this.rgid;
@@ -79,13 +80,13 @@ export class Sys {
   setUid(uid: number): void {
     this.ids([uid]);
     if (this.privileged) this.setResuid(uid, uid, uid);
-    else this.setResuid(undefined, uid, undefined);
+    else this.setResuid(null, uid, null);
   }
 
   setGid(gid: number): void {
     this.ids([gid], true);
     if (this.privileged) this.setResgid(gid, gid, gid);
-    else this.setResgid(undefined, gid, undefined);
+    else this.setResgid(null, gid, null);
   }
 
   setFsuid(uid: number): number {
@@ -107,7 +108,7 @@ export class Sys {
   }
 
   async inb(): Promise<Uint8Array> {
-    const input = this.p.fds.get(0)?.input ?? bad("EBADF", "stdin");
+    const input = this.p.input(0) ?? bad("EBADF", "stdin");
     const q: Uint8Array[] = [];
     let n = 0;
     for (;;) {
@@ -123,7 +124,7 @@ export class Sys {
   }
 
   async chunkb(): Promise<Uint8Array> {
-    const input = this.p.fds.get(0)?.input ?? bad("EBADF", "stdin");
+    const input = this.p.input(0) ?? bad("EBADF", "stdin");
     return input.rd();
   }
 
@@ -132,17 +133,19 @@ export class Sys {
   async input(): Promise<string> { return dec(await this.inb()); }
 
   async out(s: string | Uint8Array): Promise<number> {
-    const out = this.p.fds.get(1)?.output ?? bad("EBADF", "stdout");
+    const out = this.p.output(1) ?? bad("EBADF", "stdout");
     return out.wr(typeof s === "string" ? enc(s) : s);
   }
 
   async err(s: string | Uint8Array): Promise<number> {
-    const out = this.p.fds.get(2)?.output ?? bad("EBADF", "stderr");
+    const out = this.p.output(2) ?? bad("EBADF", "stderr");
     return out.wr(typeof s === "string" ? enc(s) : s);
   }
 
-  env(k?: string): string | Map<string, string> | undefined {
-    return k === undefined ? new Map(this.p.env) : this.p.env.get(k);
+  env(): Map<string, string>;
+  env(k: string): string | null;
+  env(k: string | null = null): string | Map<string, string> | null {
+    return k === null ? new Map(this.p.env) : this.p.env.get(k) ?? null;
   }
 
   setenv(k: string, v: string): void { this.p.env.set(k, v); }
@@ -185,12 +188,13 @@ export class Sys {
   glob(p: string): string[] { return this.k.fs.glob(p, this.cwd, this.fcred); }
 
   open(path: string, flags = "r", mode = 0o666): number {
+    // Check creation and access policy before allocating a descriptor; truncation requires write access.
     const rd = flags.includes("r") || flags.includes("+");
     const wr = /[wa+]/.test(flags);
     const add = flags.startsWith("a");
     if (path === "/dev/tty") {
       const n = this.k.fd(this.p);
-      this.p.fds.set(n, new Fd(this.p.fds.get(0)?.input, this.p.fds.get(1)?.output, undefined, rd, wr, add));
+      this.p.fds.set(n, new Fd(this.p.input(0), this.p.output(1), null, { rd, wr, add, clo: false }));
       return n;
     }
     try {
@@ -201,12 +205,12 @@ export class Sys {
       if (flags.startsWith("w")) this.writeb(h.path, new Uint8Array());
       path = h.path;
     } catch (e) {
-      if (!(e instanceof KErr) || e.code !== "ENOENT" || !wr) throw e;
+      if (!(e instanceof KErr) || e.code !== "ENOENT" || !wr) throw e instanceof Error ? e : new Error(typeof e === "string" ? e : "non-Error kernel exception");
       this.mkfile(path, new Uint8Array(), mode);
       path = this.k.fs.at(path, this.cwd, this.fcred).path;
     }
     const n = this.k.fd(this.p);
-    const f = new Fd(undefined, undefined, path, rd, wr, add);
+    const f = new Fd(null, null, path, { rd, wr, add, clo: false });
     if (add) f.pos = this.stat(path).size;
     this.p.fds.set(n, f);
     return n;
@@ -217,16 +221,16 @@ export class Sys {
     if (!(h.node instanceof Dir)) bad("ENOTDIR", path);
     this.k.fs.need(h.node, this.fcred, 5, h.path);
     const n = this.k.fd(this.p);
-    this.p.fds.set(n, new Fd(undefined, undefined, h.path, true));
+    this.p.fds.set(n, new Fd(null, null, h.path, { rd: true, wr: false, add: false, clo: false }));
     return n;
   }
 
   pipe(): [number, number] {
     const p = new Pipe(), rd = this.k.fd(this.p);
-    this.p.fds.set(rd, new Fd(p, undefined, undefined, true));
+    this.p.fds.set(rd, new Fd(p, null, null, { rd: true, wr: false, add: false, clo: false }));
     p.holdR();
     const wr = this.k.fd(this.p);
-    this.p.fds.set(wr, new Fd(undefined, p, undefined, false, true));
+    this.p.fds.set(wr, new Fd(null, p, null, { rd: false, wr: true, add: false, clo: false }));
     p.hold();
     return [rd, wr];
   }
@@ -234,11 +238,10 @@ export class Sys {
   close(fd: number): void {
     const f = this.p.fds.get(fd) ?? bad("EBADF", String(fd));
     this.p.fds.delete(fd);
-    f.input?.releaseR?.();
-    f.output?.close?.();
+    f.release();
   }
 
-  dup(fd: number, nu?: number): number { return this.k.cloneFd(this.p, fd, nu); }
+  dup(fd: number, nu: number | null = null): number { return this.k.cloneFd(this.p, fd, nu); }
 
   fdr(fd: number, len = 65536): Uint8Array {
     const f = this.p.fds.get(fd) ?? bad("EBADF", String(fd));
@@ -286,7 +289,7 @@ export class Sys {
     return n;
   }
 
-  start(name: string, a: string[], opt: Start = {}): Proc { return this.k.start(name, a, this.p, opt); }
+  start(name: string, a: string[], opt: Start = emptyStart()): Proc { return this.k.start(name, a, this.p, opt); }
   exec(name: string, argv: string[], env: Map<string, string>): Promise<never> { return this.k.exec(name, argv, env, this.p); }
   wait(pid: number): Promise<number> { return this.k.wait(pid, this.p); }
   reap(pid: number): void { this.k.reap(pid, this.p); }

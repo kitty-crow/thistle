@@ -1,0 +1,63 @@
+import type { F32, F64, I32, I64, Ptr, U32, U64 } from "./types.js";
+import type { ThistleMemory } from "./memory.js";
+
+const MASK32 = 0xffffffffn;
+
+export const word = (value: I32 | U32): I64 => BigInt(value);
+export const sx = (value: I64 | U64, bits: I32): I64 => BigInt.asIntN(bits, value);
+export const ux = (value: I64 | U64): U64 => BigInt.asUintN(64, value);
+export const u32word = (value: I32 | U32 | I64 | U64): U64 => BigInt.asUintN(32, BigInt(value));
+export const mulU32 = (left: U32, right: U32): U32 => Math.imul(left, right) >>> 0;
+export const wordToI32 = (value: I64 | U64): I32 => Number(BigInt.asIntN(32, value));
+export const wordToU32 = (value: I64 | U64): U32 => Number(BigInt.asUintN(32, value));
+
+export const wordToPtr = (value: I64 | U64): Ptr => {
+  const unsigned = ux(value);
+  if (unsigned > 0x7fffffffn) return 0xffffffff;
+  return Number(unsigned);
+};
+
+// The caller owns the eight-byte scratch range for the duration of each conversion.
+export const bitsToF32 = (memory: ThistleMemory, scratch: Ptr, value: U64): F32 => {
+  memory.view.setUint32(scratch, Number(value & MASK32), true);
+  return memory.view.getFloat32(scratch, true);
+};
+
+export const bitsToF64 = (memory: ThistleMemory, scratch: Ptr, value: U64): F64 => {
+  memory.view.setBigUint64(scratch, ux(value), true);
+  return memory.view.getFloat64(scratch, true);
+};
+
+export const f32ToBits = (memory: ThistleMemory, scratch: Ptr, value: F32 | F64): U64 => {
+  memory.view.setFloat32(scratch, Math.fround(value), true);
+  return BigInt(memory.view.getUint32(scratch, true));
+};
+
+export const f64ToBits = (memory: ThistleMemory, scratch: Ptr, value: F64): U64 => {
+  memory.view.setFloat64(scratch, value, true);
+  return memory.view.getBigUint64(scratch, true);
+};
+
+export const roundF32 = (value: F64): F32 => Math.fround(value);
+export const floatIsNaN = (value: F64): boolean => Number.isNaN(value);
+export const floatSqrt = (value: F64): F64 => Math.sqrt(value);
+export const floatMin = (left: F64, right: F64): F64 => Math.min(left, right);
+export const floatMax = (left: F64, right: F64): F64 => Math.max(left, right);
+export const floatTrunc = (value: F64): F64 => Math.trunc(value);
+export const floatFloor = (value: F64): F64 => Math.floor(value);
+export const floatCeil = (value: F64): F64 => Math.ceil(value);
+export const floatToI64 = (value: F64): I64 => BigInt(value);
+export const floatToU64 = (value: F64): U64 => BigInt(value);
+export const wordToFloat = (value: I64): F64 => Number(value);
+export const unsignedWordToFloat = (value: U64): F64 => Number(value);
+
+// Compatibility re-exports; the implementations now live in canonical Thistle.
+export {
+  rv64DivideSigned as divSigned,
+  rv64DivideUnsigned as divUnsigned,
+  rv64MulHighSigned as mulHighSigned,
+  rv64MulHighSignedUnsigned as mulHighSignedUnsigned,
+  rv64MulHighUnsigned as mulHighUnsigned,
+  rv64RemainderSigned as remSigned,
+  rv64RemainderUnsigned as remUnsigned,
+} from "../core/rv64-arithmetic.js";

@@ -1,0 +1,17 @@
+# Native kernel ABI
+
+The kernel uses fixed scalar types and a caller-provided linear-memory region. The control, hart, process, page, descriptor and mapping tables are defined in [the ABI constants](abi.md). Status codes are not host exceptions.
+
+| Operation | Entry points |
+| --- | --- |
+| Initialisation | `thistleKernelInit`, `thistleKernelInitWithVfs`, `thistleKernelValid`, `thistleHartInit`, `thistleProcessInit`, `thistleProcessSetGroup`, `thistleProcessCount` |
+| Mounted filesystem and descriptors | `thistleResolvePath`, `thistleAccessInode`, `thistleOpenPath`, `thistleReadDescriptor`, `thistleSeekDescriptor`, `thistleCloseDescriptor`, `thistleDescriptorKind`, `thistleDescriptorInode`, `thistleDescriptorOffset` |
+| Executable image and mappings | `thistleImageReserve`, `thistleImageContains`, `thistleImageRelease`, `thistleImageBegin`, `thistleImageSegment`, `thistleImageFinish`, `thistleGuestPage`, `thistleProcessSegmentCount`, `thistleProcessMapCount`, `thistleProcessMapAddress`, `thistleProcessMapEnd`, `thistleProcessMapProtection` |
+| Guest virtual limits and startup | `thistleHartVirtualTop`, `thistleHartImageFloor`, `thistleHartStackBottom`, `thistleHartStackPointer`, `thistleHartBreak`, `thistleStackPrepare`, `thistleStackCopy`, `thistleStackStoreU64`, `thistleStackAux`, `thistleStackFinish` |
+| Hart observation and register access | `thistleHartGetX`, `thistleHartSetX`, `thistleHartGetF`, `thistleHartSetF`, `thistleHartPc`, `thistleHartSetPc`, `thistleHartStatus`, `thistleHartMetric`, `thistleHartExitCode` |
+| Batch execution | `thistleRunRv64Batch`, `thistleRunSchedulerBatch`, `thistleWorkerMetric`, `thistleExitHart` |
+| Host requests | `thistleHostOperation`, `thistleHostDescriptor`, `thistleHostAddress`, `thistleHostLength`, `thistleResumeSyscall`, `thistleEnableHostStdin`, `thistleResumeHost`, `thistleResumeHostRead` |
+
+Reserve an image before loading it; release the reservation after the load. Initialise guest process and hart state before running instructions. A batch may stop for a syscall, host I/O, contention, exit or fault; consult the event and status before resuming. Guest addresses must be resolved through the page table rather than treated as physical pointers.
+
+The three wide scalar entry points `thistleProcessInit`, `thistleImageBegin` and `thistleImageSegment` retain their positional ABI argument lists. `//@cg-expect-error` requires a finding on each declaration line. The implementations remain checked. Compiled targets own their exported symbol mapping.

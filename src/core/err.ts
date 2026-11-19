@@ -12,11 +12,17 @@ export class KErr extends Error {
   }
 }
 
-export const bad = (code: Errno, msg?: string): never => {
+export const bad = (code: Errno, msg: string = code): never => {
   throw new KErr(code, msg);
 };
 
-export const msg = (e: unknown): string => {
+export const msg = (e: Error | string): string => {
   if (e instanceof KErr) return `${e.code}: ${e.message}`;
   return e instanceof Error ? e.message : String(e);
 };
+
+/** Read a required indexed value without hiding an invalid index or missing entry. */
+export function requireValue<T>(value: T | null, expression: string): T {
+  if (value === null) throw new KErr("EFAULT", `missing value: ${expression}`);
+  return value;
+}

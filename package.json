@@ -1,20 +1,25 @@
 {
   "name": "@kittyx/thistle",
-  "version": "2.1.0",
+  "version": "2.2.1",
   "private": true,
   "type": "module",
   "description": "The base TypeScript kernel in the KITTYX family.",
   "scripts": {
-    "build": "rm -rf build && tsc -p tsconfig.json",
-    "check": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run build && node --test build/test/kernel-memory.test.js"
+    "build": "bun run guards && rm -rf build && bun --bun tsc -p tsconfig.json && for dir in build/src/*; do ln -s \"src/${dir##*/}\" \"build/${dir##*/}\"; done",
+    "check": "bun --bun tsc -p tsconfig.json --noEmit",
+    "guards": "bash scripts/guards.sh",
+    "test": "bun test --timeout 60000 src/test",
+    "test:memory": "bun test --timeout 60000 src/test/kernel-memory.test.ts",
+    "test:numeric": "bun test --timeout 60000 src/test/native-word.test.ts",
+    "test:vfs": "bun test --timeout 60000 src/test/native-vfs-syscall.test.ts",
+    "test:host": "bun test --timeout 60000 src/test/net-boundary.test.ts"
   },
   "devDependencies": {
+    "@kitty-crow/code-guards": "git+https://github.com/kitty-crow/code-guards.git#d1ce06c6b4a71e5f94ca97ba4b0f6780408aa3f6",
     "@types/node": "^26.1.1",
     "typescript": "^5.9.2"
   },
   "engines": {
-    "node": ">=20.0.0",
     "bun": ">=1.1.0"
   },
   "author": {

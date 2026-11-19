@@ -1,6 +1,6 @@
 import type { In, Out } from "../io/stream.js";
 import { credGid, credUid } from "../fs/vfs.js";
-import type { Cred } from "../fs/vfs.js";
+import type { ProcCred } from "../fs/vfs.js";
 
 export type PState = "ready" | "run" | "sleep" | "stop" | "zombie";
 export type Sig = 0 | 1 | 2 | 9 | 13 | 15;
@@ -19,25 +19,51 @@ export class ExecReplace extends Error {
     public readonly args: string[],
     public readonly argv: string[],
     public readonly env: Map<string, string>,
-    public readonly cred: Cred,
+    public readonly cred: ProcCred,
   ) {
     super(`exec ${path}`);
     this.name = "ExecReplace";
   }
 }
 
+export interface FdFlags { rd: boolean; wr: boolean; add: boolean; clo: boolean }
+
 export class Fd {
   pos = 0;
 
   constructor(
-    public input?: In,
-    public output?: Out,
-    public path?: string,
-    public rd = false,
-    public wr = false,
-    public add = false,
-    public clo = false,
-  ) {}
+    public input: In | null = null,
+    public output: Out | null = null,
+    public path: string | null = null,
+    flags: FdFlags = { rd: false, wr: false, add: false, clo: false },
+  ) { this.rd = flags.rd; this.wr = flags.wr; this.add = flags.add; this.clo = flags.clo; }
+
+  rd: boolean;
+  wr: boolean;
+  add: boolean;
+  clo: boolean;
+
+  hold(): void {
+    if (this.input !== null) this.input.holdR();
+    if (this.output !== null) this.output.hold();
+  }
+
+  release(): void {
+    if (this.input !== null) this.input.releaseR();
+    if (this.output !== null) this.output.close();
+  }
+}
+
+export interface ProcInit {
+  pid: number;
+  ppid: number;
+  pgid: number;
+  cmd: string;
+  argv: string[];
+  cwd: string;
+  env: Map<string, string>;
+  cred: ProcCred;
+  io: Io;
 }
 
 export class Proc {
@@ -55,32 +81,47 @@ export class Proc {
   signalMask = 0n;
   private pending: Sig | null = null;
   readonly done: Promise<number>;
-  private fin!: (n: number) => void;
+  private fin: ((n: number) => void) | null = null;
 
-  constructor(
-    public readonly pid: number,
-    public readonly ppid: number,
-    public pgid: number,
-    public cmd: string,
-    public argv: string[],
-    public cwd: string,
-    public env: Map<string, string>,
-    public cred: Cred,
-    io: Io,
-  ) {
+  readonly pid: number;
+  readonly ppid: number;
+  pgid: number;
+  cmd: string;
+  argv: string[];
+  cwd: string;
+  env: Map<string, string>;
+  cred: ProcCred;
+
+  constructor(init: ProcInit) {
+    const { pid, ppid, pgid, cmd, argv, cwd, env, cred, io } = init;
+    this.pid = pid; this.ppid = ppid; this.pgid = pgid;
+    this.cmd = cmd; this.argv = argv; this.cwd = cwd;
+    this.env = env; this.cred = cred;
     this.fsuid = credUid(cred);
     this.fsgid = credGid(cred);
-    this.fds.set(0, new Fd(io.sin, undefined, "/dev/stdin", true));
-    this.fds.set(1, new Fd(undefined, io.sout, "/dev/stdout", false, true));
-    this.fds.set(2, new Fd(undefined, io.serr, "/dev/stderr", false, true));
+    this.fds.set(0, new Fd(io.sin, null, "/dev/stdin", { rd: true, wr: false, add: false, clo: false }));
+    this.fds.set(1, new Fd(null, io.sout, "/dev/stdout", { rd: false, wr: true, add: false, clo: false }));
+    this.fds.set(2, new Fd(null, io.serr, "/dev/stderr", { rd: false, wr: true, add: false, clo: false }));
     this.done = new Promise(ok => { this.fin = ok; });
+  }
+
+  input(fd = 0): In | null {
+    const descriptor = this.fds.get(fd) ?? null;
+    return descriptor === null ? null : descriptor.input;
+  }
+
+  output(fd = 1): Out | null {
+    const descriptor = this.fds.get(fd) ?? null;
+    return descriptor === null ? null : descriptor.output;
   }
 
   end(n: number): void {
     if (this.code !== null) return;
     this.code = n & 0xff;
     this.state = "zombie";
-    this.fin(this.code);
+    const finish = this.fin;
+    if (finish === null) throw new Error("missing process completion resolver");
+    finish(this.code);
   }
 
   signal(s: Sig): boolean {
@@ -95,9 +136,11 @@ export class Proc {
 
   setSignalMask(how: 0 | 1 | 2, mask: bigint): bigint {
     const old = this.signalMask, kill = 1n << 8n;
-    if (how === 0) this.signalMask |= mask;
-    else if (how === 1) this.signalMask &= ~mask;
-    else this.signalMask = mask;
+    switch (how) {
+      case 0: this.signalMask |= mask; break;
+      case 1: this.signalMask &= ~mask; break;
+      default: this.signalMask = mask;
+    }
     this.signalMask &= ~kill;
     const p = this.pending;
     if (p !== null && !(this.signalMask & (1n << BigInt(p - 1)))) {

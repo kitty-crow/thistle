@@ -1,4 +1,5 @@
-import { enc } from "./stream.js";
+import { requireValue } from "../core/err.js";
+import { enc, Stream } from "./stream.js";
 import type { In, Out } from "./stream.js";
 
 /*
@@ -97,23 +98,20 @@ function defaultTermios(): Uint8Array {
   return raw;
 }
 
-class TtyIn implements In {
-  tty: Tty;
+class TtyIn extends Stream implements In {
 
   private readonly q: Uint8Array[] = [];
   private readonly wait: Array<(b: Uint8Array) => void> = [];
 
-  constructor(tty: Tty) {
-    this.tty = tty;
-  }
+  constructor(override readonly tty: Tty) { super(); }
 
   async rd(): Promise<Uint8Array> {
-    const b = this.q.shift();
+    const b = this.q.shift() ?? null;
 
     /*
      * A zero-length array is meaningful: it represents canonical EOF.
      */
-    if (b !== undefined) {
+    if (b !== null) {
       return b;
     }
 
@@ -121,7 +119,7 @@ class TtyIn implements In {
   }
 
   push(b: Uint8Array): void {
-    const ok = this.wait.shift();
+    const ok = this.wait.shift() ?? null;
 
     if (ok) {
       ok(b);
@@ -139,15 +137,12 @@ class TtyIn implements In {
   }
 }
 
-class TtyOut implements Out {
-  tty: Tty;
+class TtyOut extends Stream implements Out {
 
   constructor(
-    tty: Tty,
+    override readonly tty: Tty,
     private readonly err = false,
-  ) {
-    this.tty = tty;
-  }
+  ) { super(); }
 
   async wr(b: Uint8Array): Promise<number> {
     this.tty.write(
@@ -172,15 +167,21 @@ export class Tty {
   constructor(
     private readonly put: (
       s: string,
-      err?: boolean,
+      err: boolean,
     ) => void | Promise<void>,
     private readonly interrupt: (
-      signal?: number,
+      signal: number,
     ) => boolean | void,
   ) {}
 
   write(s: string, err = false): void {
-    void this.put(s, err);
+    const pending = this.put(s, err);
+    if (pending instanceof Promise) pending.catch(() => {
+      // A failed host terminal transport must wake the foreground program.
+      this.interrupt(2);
+      this.input.wake();
+      console.error("terminal output transport failed");
+    });
   }
 
   feed(s: string | Uint8Array): void {
@@ -188,44 +189,35 @@ export class Tty {
       ? s
       : new TextDecoder().decode(s);
 
-    if (!this.hasLocalFlag(ICANON)) {
-      let pending = "";
-
-      for (const ch of text) {
-        if (
-          this.hasLocalFlag(ISIG) &&
-          this.isControlCharacter(ch, VINTR)
-        ) {
-          if (pending) {
-            this.input.push(enc(pending));
-            pending = "";
-          }
-
-          this.signalInterrupt();
-          continue;
-        }
-
-        pending += ch;
-
-        if (this.hasLocalFlag(ECHO)) {
-          this.write(ch);
-        }
-      }
-
-      /*
-       * Preserve a host key event as one read. This keeps terminal escape
-       * sequences such as ESC [ A intact for the guest line editor.
-       */
-      if (pending) {
-        this.input.push(enc(pending));
-      }
-
-      return;
-    }
+    if (!this.hasLocalFlag(ICANON)) { this.feedRaw(text); return; }
 
     for (const ch of text) {
       this.char(ch);
     }
+  }
+
+  private feedRaw(text: string): void {
+    let pending = "";
+    // Retain each host key event as one read so escape sequences reach guest editors intact.
+    for (const ch of text) {
+      if (this.hasLocalFlag(ISIG) && this.isControlCharacter(ch, VINTR)) {
+        this.pushPending(pending);
+        pending = "";
+        this.signalInterrupt();
+        continue;
+      }
+      pending += ch;
+      this.echo(ch);
+    }
+    this.pushPending(pending);
+  }
+
+  private pushPending(pending: string): void {
+    if (pending) this.input.push(enc(pending));
+  }
+
+  private echo(text: string): void {
+    if (this.hasLocalFlag(ECHO)) this.write(text);
   }
 
   resize(rows: number, cols: number): void {
@@ -319,7 +311,7 @@ export class Tty {
       );
     }
 
-    return this.attributes[CC_OFFSET + index]!;
+    return requireValue(this.attributes[CC_OFFSET + index] ?? null, "this.attributes[CC_OFFSET + index]");
   }
 
   private isControlCharacter(
@@ -364,15 +356,7 @@ export class Tty {
     characters.pop();
     this.line = characters.join("");
 
-    if (this.hasLocalFlag(ECHO)) {
-      if (this.hasLocalFlag(ECHOE)) {
-        this.write("\b \b");
-      } else {
-        this.write(
-          String.fromCharCode(this.control(VERASE)),
-        );
-      }
-    }
+    this.echo(this.hasLocalFlag(ECHOE) ? "\b \b" : String.fromCharCode(this.control(VERASE)));
 
     return true;
   }
@@ -382,7 +366,7 @@ export class Tty {
 
     while (
       characters.length &&
-      /\s/u.test(characters[characters.length - 1]!)
+      /\s/u.test(requireValue(characters[characters.length - 1] ?? null, "characters[characters.length - 1]"))
     ) {
       this.eraseLast();
       characters = Array.from(this.line);
@@ -390,7 +374,7 @@ export class Tty {
 
     while (
       characters.length &&
-      !/\s/u.test(characters[characters.length - 1]!)
+      !/\s/u.test(requireValue(characters[characters.length - 1] ?? null, "characters[characters.length - 1]"))
     ) {
       this.eraseLast();
       characters = Array.from(this.line);
@@ -435,11 +419,7 @@ export class Tty {
       this.attributes.set(defaultTermios());
     }
 
-    if (handled && this.hasLocalFlag(ECHOCTL)) {
-      this.write("^C\r\n");
-    } else if (handled) {
-      this.write("\r\n");
-    }
+    if (handled) this.write(this.hasLocalFlag(ECHOCTL) ? "^C\r\n" : "\r\n");
 
     this.input.wake();
   }
@@ -456,9 +436,7 @@ export class Tty {
     if (!this.hasLocalFlag(ICANON)) {
       this.input.push(enc(ch));
 
-      if (this.hasLocalFlag(ECHO)) {
-        this.write(ch);
-      }
+      this.echo(ch);
 
       return;
     }
@@ -484,9 +462,7 @@ export class Tty {
     }
 
     if (ch === "\r" || ch === "\n") {
-      if (this.hasLocalFlag(ECHO)) {
-        this.write("\r\n");
-      }
+      this.echo("\r\n");
 
       this.input.push(enc(this.line + "\n"));
       this.line = "";
@@ -495,8 +471,6 @@ export class Tty {
 
     this.line += ch;
 
-    if (this.hasLocalFlag(ECHO)) {
-      this.write(ch);
-    }
+    this.echo(ch);
   }
 }
