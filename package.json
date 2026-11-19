@@ -1,6 +1,6 @@
 {
   "name": "@kittyx/thistle",
-  "version": "2.2.1",
+  "version": "2.2.2",
   "private": true,
   "type": "module",
   "description": "The base TypeScript kernel in the KITTYX family.",
@@ -12,7 +12,7 @@
     "test:memory": "bun test --timeout 60000 src/test/kernel-memory.test.ts",
     "test:numeric": "bun test --timeout 60000 src/test/native-word.test.ts",
     "test:vfs": "bun test --timeout 60000 src/test/native-vfs-syscall.test.ts",
-    "test:host": "bun test --timeout 60000 src/test/net-boundary.test.ts"
+    "test:host": "bun test --timeout 60000 src/test/net-boundary.test.ts src/test/host-rv64.test.ts"
   },
   "devDependencies": {
     "@kitty-crow/code-guards": "git+https://github.com/kitty-crow/code-guards.git#d1ce06c6b4a71e5f94ca97ba4b0f6780408aa3f6",

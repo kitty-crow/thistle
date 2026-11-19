@@ -92,17 +92,17 @@ export const loadI64 = (memory: ThistleMemory, at: Ptr): I64 => {
 
 export const storeU8 = (memory: ThistleMemory, at: Ptr, value: U32 | I64): void => {
   range(memory, at, 1);
-  memory.bytes[at] = Number(value) & 255;
+  memory.bytes[at] = typeof value === "bigint" ? Number(BigInt.asUintN(8, value)) : value & 255;
 };
 
 export const storeU16 = (memory: ThistleMemory, at: Ptr, value: U32 | I64): void => {
   range(memory, at, 2);
-  memory.view.setUint16(at, Number(value), true);
+  memory.view.setUint16(at, typeof value === "bigint" ? Number(BigInt.asUintN(16, value)) : value, true);
 };
 
 export const storeU32 = (memory: ThistleMemory, at: Ptr, value: U32 | I32 | I64): void => {
   range(memory, at, 4);
-  memory.view.setUint32(at, Number(value), true);
+  memory.view.setUint32(at, typeof value === "bigint" ? Number(BigInt.asUintN(32, value)) : value, true);
 };
 
 export const storeI32 = (memory: ThistleMemory, at: Ptr, value: I32): void => {

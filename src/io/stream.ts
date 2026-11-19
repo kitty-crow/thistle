@@ -6,9 +6,17 @@ const td = new TextDecoder();
 export const enc = (s: string): Uint8Array => te.encode(s);
 export const dec = (b: Uint8Array): string => td.decode(b);
 
+/** Terminal state shared by descriptors and the guest terminal ioctl bridge. */
+export interface TerminalState {
+  termios(): Uint8Array;
+  setTermios(raw: Uint8Array, flush: boolean): void;
+  size(): { rows: number; cols: number };
+  resize(rows: number, cols: number): void;
+}
+
 /** Ordinary endpoints do not retain resources; a Pipe overrides reference hooks. */
 export abstract class Stream {
-  readonly tty: object | null = null;
+  readonly tty: TerminalState | null = null;
   holdR(): void { /* Ordinary input has no reference count. */ }
   releaseR(): void { /* Ordinary input has no reference count. */ }
   hold(): void { /* Ordinary output has no reference count. */ }
@@ -69,11 +77,25 @@ export class FnOut extends Stream implements Out {
 }
 
 export class Pipe extends Stream implements In, Out {
+
   private readonly q: Uint8Array[] = [];
   private readonly w: Array<(b: Uint8Array) => void> = [];
   private shut = false;
   private refs = 0;
   private rrefs = 0;
+  private readonly subscribers = new Set<() => void>();
+
+  get readable(): boolean { return this.q.length > 0 || this.shut; }
+  get writable(): boolean { return !this.shut && this.rrefs > 0; }
+
+  onChange(callback: () => void): () => void {
+    this.subscribers.add(callback);
+    return () => this.subscribers.delete(callback);
+  }
+
+  private notify(): void {
+    for (const callback of this.subscribers) callback();
+  }
 
   override hold(): void { this.refs++; }
   override holdR(): void { this.rrefs++; }
@@ -82,15 +104,16 @@ export class Pipe extends Stream implements In, Out {
     if (this.shut) throw new KErr("EPIPE", "pipe is closed");
     if (!b.length) return 0;
     const x = b.slice();
-    const fn = this.w.shift() ?? null;
+    const fn = (this.w.shift() ?? null);
     if (fn) fn(x);
     else this.q.push(x);
+    this.notify();
     return x.length;
   }
 
   async rd(): Promise<Uint8Array> {
-    const b = this.q.shift() ?? null;
-    if (b) return b;
+    const b = (this.q.shift() ?? null);
+    if (b) { this.notify(); return b; }
     if (this.shut) return new Uint8Array();
     return new Promise<Uint8Array>(ok => this.w.push(ok));
   }
@@ -110,6 +133,7 @@ export class Pipe extends Stream implements In, Out {
   private end(): void {
     if (this.shut) return;
     this.shut = true;
+    this.notify();
     for (const ok of this.w.splice(0)) ok(new Uint8Array());
   }
 }

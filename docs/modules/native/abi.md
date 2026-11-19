@@ -329,3 +329,5 @@ ABI identities, fixed region sizes, status/error values, flags and capacities us
 - `THISTLE_START_RANGE`
 - `THISTLE_START_FORMAT`
 - `THISTLE_START_MEMORY`
+
+`THISTLE_MAP_BACKING_HOST_FILE` marks mappings whose bytes are backed by the hosted live VFS. These mappings delegate munmap so shared writes are flushed before frames are released.

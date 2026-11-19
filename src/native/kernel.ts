@@ -198,6 +198,7 @@ import {
   M_FLAGS,
   M_PROTECTION,
   THISTLE_MAP_BACKING_ANONYMOUS,
+  THISTLE_MAP_BACKING_HOST_FILE,
   THISTLE_MAP_CAPACITY,
   THISTLE_MAP_STRIDE,
   FD_CURSOR,
@@ -1246,6 +1247,46 @@ const anonymousMap = (memory: ThistleMemory, proc: Ptr, address: U64, length: U6
   const next = candidate + size + MAP_PAGE - 1n & -MAP_PAGE;
   if (next > atomicLoadU64(memory, proc + P_MAP_NEXT)) atomicStoreU64(memory, proc + P_MAP_NEXT, next);
   return sx(candidate, 64);
+};
+
+/** Reserve a hosted file mapping in the canonical address-space tables. */
+export const thistleMapHostFile = (
+  memory: ThistleMemory, hart: U32, address: U64, length: U64, protection: U64, flags: U64,
+): I64 => {
+  const proc = processForHart(memory, hart);
+  if (proc === INVALID_POINTER) return -3n;
+  const lock = proc + P_LOCK;
+  if (!acquire(memory, lock)) return -11n;
+  const result = anonymousMap(memory, proc, address, length, protection, flags | 0x20n);
+  if (result >= 0n) {
+    const count = loadU32(memory, proc + P_MAP_COUNT);
+    storeU32(memory, mapAt(memory, proc, count - 1) + M_BACKING, THISTLE_MAP_BACKING_HOST_FILE);
+  }
+  release(memory, lock);
+  return result;
+};
+
+/** Release a hosted mapping after its shared file data has been flushed. */
+export const thistleUnmapHostFile = (memory: ThistleMemory, hart: U32, address: U64, length: U64): I64 => {
+  const proc = processForHart(memory, hart);
+  if (proc === INVALID_POINTER) return -3n;
+  const lock = proc + P_LOCK;
+  if (!acquire(memory, lock)) return -11n;
+  const result = anonymousUnmap(memory, proc, address, length);
+  release(memory, lock);
+  return result;
+};
+
+const overlapsHostFile = (memory: ThistleMemory, proc: Ptr, address: U64, length: U64): boolean => {
+  const count = loadU32(memory, proc + P_MAP_COUNT);
+  let index: U32 = 0;
+  while (index < count) {
+    const mapping = mapAt(memory, proc, index);
+    if (loadU32(memory, mapping + M_BACKING) === THISTLE_MAP_BACKING_HOST_FILE && address < loadU64(memory, mapping + M_END) &&
+        address + length > loadU64(memory, mapping + M_ADDRESS)) return true;
+    index += 1;
+  }
+  return false;
 };
 
 const anonymousUnmap = (memory: ThistleMemory, proc: Ptr, address: U64, length: U64): I64 => {
@@ -2670,6 +2711,10 @@ const unmapSyscall = (memory: ThistleMemory, hart: U32, proc: Ptr, number: U32):
     setPc(memory, hart, loadU64(memory, at + H_PC) - 4n);
     return THISTLE_BATCH_CONTENDED;
   }
+  if (overlapsHostFile(memory, proc, ux(x(memory, hart, 10)), ux(x(memory, hart, 11)))) {
+    release(memory, lock);
+    return fallbackSyscall(memory, hart);
+  }
   const result = anonymousUnmap(memory, proc, ux(x(memory, hart, 10)), ux(x(memory, hart, 11)));
   traceMappingOperation(memory, hart, number, result);
   release(memory, lock);
@@ -2992,12 +3037,15 @@ export const thistleRunRv64Batch = (
   return runHartLocked(memory, hart, budget, nowMicros, worker);
 };
 
+// A worker holds the scheduler lock only while selecting a runnable hart.
+// Hart execution and host requests occur after selection so other workers can progress.
 export const thistleRunSchedulerBatch = (
   memory: ThistleMemory,
   budget: U32,
   nowMicros: I64,
   worker: I32,
 ): I32 => {
+  // Release the scheduler lock before running a claimed hart or yielding to host I/O.
   if (!thistleKernelValid(memory) || budget < 1 || worker < 0) return THISTLE_BATCH_FAULT;
   const workerId = wordToU32(word(worker));
   const workerCapacity = loadU32(memory, THISTLE_CONTROL_BASE + C_WORKER_CAPACITY);
