@@ -26,3 +26,14 @@ export function requireValue<T>(value: T | null, expression: string): T {
   if (value === null) throw new KErr("EFAULT", `missing value: ${expression}`);
   return value;
 }
+
+/** Apply an operation only when its input is present. */
+export function withValue<T, R>(value: T | null, use: (value: T) => R): R | null {
+  if (value === null) return null;
+  return use(value);
+}
+
+/** Enforce an invariant while preserving control-flow narrowing and lazy errors. */
+export function ensure<T>(condition: T, failure: () => never): asserts condition {
+  if (!condition) failure();
+}

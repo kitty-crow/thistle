@@ -5,7 +5,7 @@ import { directMemory, storeU8, storeU32, loadU8 } from "../native/memory.js";
 import { THISTLE_BATCH_BUDGET, THISTLE_BATCH_SYSCALL, THISTLE_SEGMENT_READ, THISTLE_SEGMENT_WRITE, THISTLE_SEGMENT_EXECUTE } from "../native/abi.js";
 import { thistleKernelInit, thistleKernelInitWithVfs, thistleHartInit, thistleProcessInit, thistleImageReserve, thistleImageRelease, thistleImageBegin,
   thistleImageSegment, thistleImageFinish, thistleHartSetPc, thistleHartSetX, thistleHartGetX, thistleRunRv64Batch,
-  thistleGuestPage } from "../native/kernel.js";
+  thistleStackPrepare, thistleResumeSyscall, thistleGuestPage, thistleMapHostFile, thistleUnmapHostFile, thistleProcessMapCount } from "../native/kernel.js";
 import { thistleLoadVfs } from "../native/vfs.js";
 
 for (const mounted of [true, false]) test(`guest file syscalls ${mounted ? "use the mounted VFS" : "delegate without a mount"}`, () => {
@@ -48,6 +48,22 @@ for (const mounted of [true, false]) test(`guest file syscalls ${mounted ? "use 
     thistleHartSetX(memory, 0, 10, -100n);
     thistleHartSetX(memory, 0, 11, 0x210000n);
     assert.equal(thistleRunRv64Batch(memory, 0, 1, 0n, -1), THISTLE_BATCH_SYSCALL);
+    assert.equal(thistleStackPrepare(memory, 0, 0x0fe00000n, 0x0ffffff0n), 0);
+    const mapped = thistleMapHostFile(memory, 0, 0n, 4096n, 3n, 1n);
+    assert.ok(mapped > 0n);
+    assert.equal(thistleProcessMapCount(memory, 0), 1);
+    assert.ok(thistleGuestPage(memory, 0, mapped, true) < 0xfffffffe);
+    // munmap must stop at the host boundary before discarding shared bytes.
+    thistleHartSetPc(memory, 0, 0x200000n);
+    thistleHartSetX(memory, 0, 17, 215n);
+    thistleHartSetX(memory, 0, 10, mapped);
+    thistleHartSetX(memory, 0, 11, 4096n);
+    // The earlier delegated open leaves the hart waiting; resume it first.
+    thistleResumeSyscall(memory, 0, mapped);
+    assert.equal(thistleRunRv64Batch(memory, 0, 1, 0n, -1), THISTLE_BATCH_SYSCALL);
+    assert.equal(thistleProcessMapCount(memory, 0), 1);
+    assert.equal(thistleUnmapHostFile(memory, 0, mapped, 4096n), 0n);
+    assert.equal(thistleProcessMapCount(memory, 0), 0);
     return;
   }
   assert.equal(call(56, -100n, 0x210000n, 1n), -30n);

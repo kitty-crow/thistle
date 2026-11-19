@@ -5,6 +5,7 @@ import { bad, KErr, requireValue } from "./err.js";
 import { Sys } from "./sys.js";
 import { Exe, codec, isExe } from "../../thistle-asm/fmt.js";
 import { Vm } from "../vm/vm.js";
+import { Rv64 } from "../vm/rv64.js";
 import { Vm64 } from "../vm/vm64.js";
 
 function decodeExecutable(path: string, bin: Uint8Array): Exe {
@@ -56,7 +57,7 @@ export function executeImage(kernel: Kern, p: Proc, path: string, bin: Uint8Arra
 
 function executeNative(sys: Sys, path: string, bin: Uint8Array, argv: string[]): Promise<number> {
   const x = decodeExecutable(path, bin);
-  if (x.machine === "thistle64" && x.isa === "rv64gc") return bad("ENOEXEC", "RV64GC execution requires the native kernel runtime");
+  if (x.machine === "thistle64" && x.isa === "rv64gc") return new Rv64(sys).run(x, [path, ...argv], bin);
   return x.machine === "thistle64" ? new Vm64(sys).run(x, [path, ...argv]) : new Vm(sys).run(x, [path, ...argv]);
 }
 

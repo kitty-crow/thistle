@@ -171,3 +171,32 @@ export class Mem64 implements RvMemory {
     return p;
   }
 }
+
+export function hostNumber(value: bigint, context: string): number {
+  if (value < BigInt(Number.MIN_SAFE_INTEGER) || value > BigInt(Number.MAX_SAFE_INTEGER)) bad("ERANGE", `${context} is out of range`);
+  return Number(value);
+}
+
+/** Fill writable guest memory in chunks accepted by the host random source. */
+export function randomFill(memory: RvMemory, check: (at: bigint, size: number, write: boolean) => void, at: bigint, size: number): number {
+  check(at, size, true);
+  for (let offset = 0; offset < size; offset += 65536) {
+    const bytes = new Uint8Array(Math.min(65536, size - offset));
+    crypto.getRandomValues(bytes);
+    memory.write(at + BigInt(offset), bytes);
+  }
+  return size;
+}
+
+/** Read one bounded, zero-terminated guest string through the active mapping checks. */
+export function readString(memory: RvMemory, check: (at: bigint, size: number) => void, address: bigint, context: string): string {
+  const bytes: number[] = [];
+  let at = BigInt.asUintN(64, address);
+  for (; bytes.length < 65536; at++) {
+    check(at, 1);
+    const byte = memory.u8(at);
+    if (byte === 0) return new TextDecoder().decode(Uint8Array.from(bytes));
+    bytes.push(byte);
+  }
+  return bad("ENAMETOOLONG", context);
+}

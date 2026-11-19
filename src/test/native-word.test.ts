@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { H_FLOAT_SCRATCH, H_STARTUP_LOADS, THISTLE_HART_BASE, THISTLE_HART_STRIDE } from "../native/abi.js";
-import { directMemory, wasmMemory, loadU64, storeU64 } from "../native/memory.js";
+import { directMemory, wasmMemory, loadU64, storeU64, loadU8, loadU16, loadU32, storeU8, storeU16, storeU32 } from "../native/memory.js";
 import { bitsToF32, bitsToF64, f32ToBits, f64ToBits } from "../native/word.js";
 
 const first = THISTLE_HART_BASE + H_FLOAT_SCRATCH;
@@ -62,4 +62,18 @@ test("conversion aliases the canonical memory, not other equal-sized buffers", (
   assert.equal(loadU64(a, first), 0x3ff0000000000000n);
   assert.equal(loadU64(b, first), 0x4000000000000000n);
   assert.equal(new DataView(external.buffer).getBigUint64(first, true), 0x4008000000000000n);
+});
+
+test("narrow stores preserve low bits beyond JavaScript integer precision", () => {
+  for (const shared of [false, true]) {
+    const memory = directMemory(65536, shared);
+    for (const value of [0x123456789abcdef1n, -0x123456789abcdef1n, 0xffffffffffffffffn]) {
+      storeU8(memory, 0, value);
+      storeU16(memory, 2, value);
+      storeU32(memory, 4, value);
+      assert.equal(loadU8(memory, 0), Number(BigInt.asUintN(8, value)));
+      assert.equal(loadU16(memory, 2), Number(BigInt.asUintN(16, value)));
+      assert.equal(loadU32(memory, 4), Number(BigInt.asUintN(32, value)));
+    }
+  }
 });

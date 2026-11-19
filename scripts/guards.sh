@@ -19,4 +19,6 @@ done < <(git ls-files --cached --others --exclude-standard -z | sort -zu)
 
 ln -s "$root/node_modules" "$scope/node_modules"
 git ls-files --cached --others --exclude-standard -z > "$scope/.guard-files"
+# Disable native ONNX telemetry before the semantic runtime is loaded.
+export ORT_DISABLE_TELEMETRY=1
 bun "$root/scripts/guards.mts" "$scope"

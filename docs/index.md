@@ -85,3 +85,12 @@ bun run test
 - [Guest execution](modules/core/guest.md)
 - [Host kernel options](modules/core/host-options.md)
 - [RV64 instruction decoding](modules/core/rv64-decode.md)
+
+## Hosted RV64 execution
+
+- [vm/rv64](modules/vm/rv64.md)
+- [vm/linux-events](modules/vm/linux-events.md)
+- [native/host-memory](modules/native/host-memory.md)
+- [native/host-exports](modules/native/host-exports.md)
+- [native/vfs-image](modules/native/vfs-image.md)
+- [test/host-rv64.test](modules/test/host-rv64.test.md)
