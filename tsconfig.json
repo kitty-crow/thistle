@@ -8,7 +8,7 @@
       "DOM",
       "DOM.Iterable"
     ],
-    "rootDir": "src",
+    "rootDir": ".",
     "outDir": "build",
     "strict": true,
     "noUncheckedIndexedAccess": true,

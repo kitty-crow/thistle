@@ -1,4 +1,4 @@
-import type { Cred } from "../fs/vfs.js";
+import type { ProcCred, SessionCred } from "../fs/vfs.js";
 import { IDENTITY } from "./identity.js";
 
 export interface AccountConfig {
@@ -6,12 +6,12 @@ export interface AccountConfig {
   displayName: string;
   home: string;
   shell: string;
-  cred: Cred;
+  cred: SessionCred;
 }
 
 export interface LocalSessionConfig {
   mode: "direct" | "login";
-  account?: string;
+  account: string | null;
 }
 
 export interface SystemConfig {
@@ -42,7 +42,7 @@ export interface SystemConfig {
     local: LocalSessionConfig;
   };
   messages: {
-    tetoBanner: string;
+    nativeBanner: string;
     motd: string;
     issue: string;
     guestReadme: string;
@@ -54,7 +54,7 @@ export interface SystemConfig {
   };
 }
 
-export const rootCred = (): Cred => ({
+export const rootCred = (): ProcCred => ({
   uid: 0,
   gid: 0,
   ruid: 0,
@@ -66,7 +66,7 @@ export const rootCred = (): Cred => ({
   groups: [0],
 });
 
-export const guestCred = (): Cred => ({
+export const guestCred = (): ProcCred => ({
   uid: 1000,
   gid: 1000,
   ruid: 1000,
@@ -83,14 +83,14 @@ export const DEFAULT_CONFIG: SystemConfig = {
     name: IDENTITY.thistle.name,
     prettyName: IDENTITY.thistle.name,
     id: "thistle",
-    version: "2.1.0",
+    version: "2.2.0",
     machine: IDENTITY.guest.architecture,
   },
   os: {
     name: "Thistle",
     prettyName: "Thistle development system",
     id: "thistle",
-    version: "2.1.0",
+    version: "2.2.0",
     homeUrl: "https://kittycrow.dev",
   },
   hostName: "thistle",
@@ -115,12 +115,12 @@ export const DEFAULT_CONFIG: SystemConfig = {
     },
   },
   sessions: {
-    local: { mode: "direct" },
+    local: { mode: "direct", account: null },
   },
   messages: {
-    tetoBanner: "",
+    nativeBanner: "",
     motd: "Welcome to the Thistle development system.\n",
-    issue: "初音ミクOS v｡三 \\n \\l\n",
+    issue: "Thistle \\n \\l\n",
     guestReadme: "This browser/local guest account is unprivileged. Your home is writable.\n",
     halted: "\r\nThistle halted.\r\n",
   },

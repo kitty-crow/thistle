@@ -1,0 +1,87 @@
+# Thistle documentation
+
+- [Kernel architecture](architecture.md)
+- [Native kernel](native-kernel.md)
+- [Filesystem](filesystem.md)
+- [Programme execution](execution.md)
+- [Processes and descriptors](processes.md)
+- [System calls](syscalls.md)
+
+## Build
+
+```sh
+git submodule update --init --recursive
+bun install
+bun run guards
+bun run check
+bun run test
+```
+
+## Module reference
+
+- [apps/base](modules/apps/base.md)
+- [asm/asm](modules/asm/asm.md)
+- [asm/checked](modules/asm/checked.md)
+- [asm/codec](modules/asm/codec.md)
+- [asm/expr](modules/asm/expr.md)
+- [asm/fmt](modules/asm/fmt.md)
+- [asm/isa](modules/asm/isa.md)
+- [asm/isa64](modules/asm/isa64.md)
+- [asm/lib](modules/asm/lib.md)
+- [asm/link](modules/asm/link.md)
+- [asm/pre](modules/asm/pre.md)
+- [asm/syn](modules/asm/syn.md)
+- [asm/vendor/kittyx/src/dependencies](modules/asm/vendor/kittyx/src/dependencies.md)
+- [asm/vendor/kittyx/src/index](modules/asm/vendor/kittyx/src/index.md)
+- [asm/vendor/kittyx/src/targets](modules/asm/vendor/kittyx/src/targets.md)
+- [asm/vendor/kittyx/src/thx](modules/asm/vendor/kittyx/src/thx.md)
+- [core/cap](modules/core/cap.md)
+- [core/config](modules/core/config.md)
+- [core/err](modules/core/err.md)
+- [core/host-kernel](modules/core/host-kernel.md)
+- [core/identity](modules/core/identity.md)
+- [core/kernel](modules/core/kernel.md)
+- [core/kernel-memory](modules/core/kernel-memory.md)
+- [core/native-types](modules/core/native-types.md)
+- [core/proc](modules/core/proc.md)
+- [core/release](modules/core/release.md)
+- [core/rv64-arithmetic](modules/core/rv64-arithmetic.md)
+- [core/rv64-branch](modules/core/rv64-branch.md)
+- [core/rv64-fclass](modules/core/rv64-fclass.md)
+- [core/rv64-immediate-op](modules/core/rv64-immediate-op.md)
+- [core/rv64-numbers](modules/core/rv64-numbers.md)
+- [core/rv64-register](modules/core/rv64-register.md)
+- [core/rv64-word](modules/core/rv64-word.md)
+- [core/sched](modules/core/sched.md)
+- [core/sys](modules/core/sys.md)
+- [fs/tree](modules/fs/tree.md)
+- [fs/vfs](modules/fs/vfs.md)
+- [io/stream](modules/io/stream.md)
+- [io/tty](modules/io/tty.md)
+- [native/abi](modules/native/abi.md)
+- [native/kernel](modules/native/kernel.md)
+- [native/memory](modules/native/memory.md)
+- [native/start](modules/native/start.md)
+- [native/thx](modules/native/thx.md)
+- [native/types](modules/native/types.md)
+- [native/vfs](modules/native/vfs.md)
+- [native/word](modules/native/word.md)
+- [net/host-fetch](modules/net/host-fetch.md)
+- [net/net](modules/net/net.md)
+- [test/kernel-memory.test](modules/test/kernel-memory.test.md)
+- [test/native-vfs-syscall.test](modules/test/native-vfs-syscall.test.md)
+- [test/native-word.test](modules/test/native-word.test.md)
+- [test/net-boundary.test](modules/test/net-boundary.test.md)
+- [vm/mem64](modules/vm/mem64.md)
+- [vm/rv64-immediate](modules/vm/rv64-immediate.md)
+- [vm/vm](modules/vm/vm.md)
+- [vm/vm64](modules/vm/vm64.md)
+- [wasm/guest-runner](modules/wasm/guest-runner.md)
+- [wasm/host-wasi](modules/wasm/host-wasi.md)
+- [wasm/wasi](modules/wasm/wasi.md)
+- [vm/files](modules/vm/files.md)
+- [native/image-range](modules/native/image-range.md)
+
+- [Guest execution](modules/core/guest.md)
+- [Host kernel options](modules/core/host-options.md)
+- [RV64 instruction decoding](modules/core/rv64-decode.md)

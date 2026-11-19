@@ -1,34 +1,49 @@
-name: CI
+name: Kernel validation
 
 on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  test:
+  validate:
+    name: Validate kernel
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out source
+        uses: actions/checkout@v5
         with:
           submodules: recursive
 
-      - uses: oven-sh/setup-bun@v2
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
+      - name: Install dependencies
+        run: bun install
 
-      - name: Install
-        run: |
-          if [ -f package-lock.json ]; then
-            npm ci
-          else
-            npm install
-          fi
+      - name: Strict Code Guards
+        run: bun run guards
 
-      - name: Check
-        run: npm test
+      - name: Type-check kernel
+        if: ${{ success() || failure() }}
+        run: bun run check
+
+      - name: Test kernel memory
+        if: ${{ success() || failure() }}
+        run: bun run test:memory
+
+      - name: Test native numeric operations
+        if: ${{ success() || failure() }}
+        run: bun run test:numeric
+
+      - name: Test native VFS syscalls
+        if: ${{ success() || failure() }}
+        run: bun run test:vfs
+
+      - name: Test host capability boundaries
+        if: ${{ success() || failure() }}
+        run: bun run test:host

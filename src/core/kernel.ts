@@ -1,30 +1,35 @@
 import { App } from "../apps/base.js";
-import { bad, KErr, msg } from "./err.js";
+import { bad, KErr, msg, requireValue } from "./err.js";
 import { MemIn, MemOut, enc } from "../io/stream.js";
 import type { In, Out } from "../io/stream.js";
 import { Reg, Vfs } from "../fs/vfs.js";
-import { credGid, credUid } from "../fs/vfs.js";
-import type { Cred } from "../fs/vfs.js";
+import { credGid, credUid, fullCred } from "../fs/vfs.js";
+import type { Cred, ProcCred, SessionCred } from "../fs/vfs.js";
 import { ExecReplace, Fd, Proc } from "./proc.js";
 import type { Io, Sig } from "./proc.js";
-import { Sys } from "./sys.js";
-import { Wasi } from "../wasm/wasi.js";
 import { Sched } from "./sched.js";
-import { Net } from "../net/net.js";
-import { Exe, codec, isExe } from "../asm/fmt.js";
-import { Vm } from "../vm/vm.js";
-import { Vm64 } from "../vm/vm64.js";
-import { Lim } from "./cap.js";
-import { DEFAULT_CONFIG, rootCred } from "./config.js";
-import type { AccountConfig, SystemConfig } from "./config.js";
+import { rootCred } from "./config.js";
+import type { AccountConfig } from "./config.js";
+import { defaultKernelOptions } from "./host-options.js";
+import type { KernelOptions } from "./host-options.js";
+import { executeImage, validateExecutable } from "./guest.js";
+export type { KernelOptions } from "./host-options.js";
+
+export interface StartIo {
+  sin: In | null;
+  sout: Out | null;
+  serr: Out | null;
+}
 
 export interface Start {
-  io?: Partial<Io>;
-  fds?: Map<number, Fd>;
-  pgid?: number;
-  cwd?: string;
-  env?: Map<string, string>;
+  io: StartIo | null;
+  fds: Map<number, Fd> | null;
+  pgid: number | null;
+  cwd: string | null;
+  env: Map<string, string> | null;
 }
+
+export const emptyStart = (): Start => ({ io: null, fds: null, pgid: null, cwd: null, env: null });
 
 export interface PInfo {
   pid: number;
@@ -38,27 +43,9 @@ export interface PInfo {
 
 export interface Mnt { src: string; at: string; kind: string; opt: string; }
 
-const root: Cred = rootCred();
+const root = rootCred();
 
-const fullCred = (cred: Cred): Cred => {
-  const uid = cred.euid ?? cred.uid ?? cred.ruid ?? 0;
-  const gid = cred.egid ?? cred.gid ?? cred.rgid ?? 0;
-  const ruid = cred.ruid ?? cred.uid ?? uid;
-  const rgid = cred.rgid ?? cred.gid ?? gid;
-  return {
-    uid,
-    gid,
-    ruid,
-    euid: uid,
-    suid: cred.suid ?? uid,
-    rgid,
-    egid: gid,
-    sgid: cred.sgid ?? gid,
-    groups: [...cred.groups],
-  };
-};
-
-const accountCred = (account: AccountConfig | Cred): { cred: Cred; name: string; home: string } => {
+const accountCred = (account: AccountConfig | SessionCred): { cred: ProcCred; name: string; home: string } => {
   if ("cred" in account) {
     return {
       cred: fullCred(account.cred),
@@ -80,6 +67,41 @@ const procFsCred = (p: Proc): Cred => ({
   groups: [...p.cred.groups],
 });
 
+function closeDistinctError(p: Proc): void {
+  const output = p.output(2);
+  if (output !== null && output !== p.output(1)) output.close();
+}
+
+function releaseStandardIo(p: Proc): void {
+  const input = p.input(0), output = p.output(1);
+  if (input !== null) input.releaseR();
+  if (output !== null) output.close();
+  closeDistinctError(p);
+}
+
+function holdStandardIo(io: Io): void {
+  io.sin.holdR();
+  io.sout.hold();
+  if (io.serr !== io.sout) io.serr.hold();
+}
+
+function replaceProcessImage(p: Proc, error: ExecReplace): void {
+  for (const [fd, descriptor] of [...p.fds]) {
+    if (!descriptor.clo) continue;
+
+    descriptor.release();
+    p.fds.delete(fd);
+  }
+
+  p.cmd = error.path;
+  p.argv = [...error.argv];
+  p.env = new Map(error.env);
+  p.cred = fullCred(error.cred);
+  p.fsuid = credUid(p.cred);
+  p.fsgid = credGid(p.cred);
+
+}
+
 export class Kern {
   readonly fs: Vfs;
   readonly apps = new Map<string, App>();
@@ -94,14 +116,17 @@ export class Kern {
   disk = false;
   ttyFn: (s: string, err: boolean) => void = () => {};
   private seq = 1;
-  private haltFn?: () => void;
+  private haltFn: (() => void) | null = null;
 
-  constructor(
-    readonly net = new Net(),
-    readonly lim = Lim.host(),
-    readonly config: SystemConfig = DEFAULT_CONFIG,
-    readonly setId = false,
-  ) {
+  readonly net: KernelOptions["net"];
+  readonly lim: KernelOptions["lim"];
+  readonly config: KernelOptions["config"];
+  readonly setId: boolean;
+  readonly wasiGuest: KernelOptions["wasiGuest"];
+
+  constructor(options: KernelOptions = defaultKernelOptions()) {
+    const { net, lim, config, setId, wasiGuest } = options;
+    this.net = net; this.lim = lim; this.config = config; this.setId = setId; this.wasiGuest = wasiGuest;
     this.fs = new Vfs(lim.fs);
     this.name = config.kernel.name;
     this.release = config.kernel.version;
@@ -118,9 +143,9 @@ export class Kern {
   }
 
   init(): Proc {
-    if (this.procs.has(1)) return this.procs.get(1)!;
+    if (this.procs.has(1)) return requireValue(this.procs.get(1) ?? null, "this.procs.get(1)");
     const z = new MemOut();
-    const p = new Proc(1, 0, 1, "init", ["init"], "/", this.baseEnv(), root, { sin: new MemIn(), sout: z, serr: z });
+    const p = new Proc({ pid: 1, ppid: 0, pgid: 1, cmd: "init", argv: ["init"], cwd: "/", env: this.baseEnv(), cred: root, io: { sin: new MemIn(), sout: z, serr: z } });
     p.state = "sleep";
     this.procs.set(1, p);
     this.seq = 2;
@@ -128,7 +153,7 @@ export class Kern {
     return p;
   }
 
-  session(io: Io, account: AccountConfig | Cred = root): Proc {
+  session(io: Io, account: AccountConfig | SessionCred = root): Proc {
     this.init();
     const { cred, name, home } = accountCred(account);
     const pid = this.seq++;
@@ -136,10 +161,10 @@ export class Kern {
     env.set("HOME", home);
     env.set("USER", name);
     env.set("PWD", home);
-    const p = new Proc(pid, 1, pid, "thsh", ["thsh"], home, env, fullCred(cred), io);
+    const p = new Proc({ pid, ppid: 1, pgid: pid, cmd: "thsh", argv: ["thsh"], cwd: home, env, cred: fullCred(cred), io });
     p.state = "run";
     this.procs.set(pid, p);
-    this.procs.get(1)!.kids.add(pid);
+    requireValue(this.procs.get(1) ?? null, "this.procs.get(1)").kids.add(pid);
     this.log(`tty: session pid=${pid} uid=${credUid(cred)}`);
     return p;
   }
@@ -159,7 +184,7 @@ export class Kern {
     const p = `/bin/${a.name}`;
     const c = root;
     try { this.fs.mkfile(p, `#!thistle:${a.name}\n`, "/", c, 0o755); }
-    catch (e) { if (!(e instanceof KErr) || e.code !== "EEXIST") throw e; }
+    catch (e) { if (!(e instanceof KErr) || e.code !== "EEXIST") throw e instanceof Error ? e : new Error(typeof e === "string" ? e : "non-Error kernel exception"); }
   }
 
   which(name: string, p: Proc): string {
@@ -176,41 +201,15 @@ export class Kern {
         const h = this.fs.at(q, p.cwd, c);
         this.fs.need(h.node, c, 1, q);
         if (h.node instanceof Reg) return h.path;
-      } catch { /* PATH lookup is allowed to miss. Quite often, in fact. */ }
+      } catch (error) {
+        if (!(error instanceof KErr) || !["ENOENT", "ENOTDIR", "EACCES"].includes(error.code)) throw error instanceof Error ? error : new Error(typeof error === "string" ? error : "non-Error kernel exception");
+      }
     }
     return bad("ENOENT", `${name}: command not found`);
   }
 
-  private validateExecutable(path: string, bin: Uint8Array): void {
-    if (bin.length >= 4 && bin[0] === 0 && bin[1] === 0x61 && bin[2] === 0x73 && bin[3] === 0x6d) return;
 
-    if (isExe(bin)) {
-      try {
-        const image = codec.unpack(bin);
-        if (!(image instanceof Exe)) bad("ENOEXEC", `${path}: not an executable`);
-      } catch (error) {
-        bad("ENOEXEC", `${path}: ${error instanceof Error ? error.message : String(error)}`);
-      }
-      return;
-    }
-
-    const source = new TextDecoder().decode(bin);
-    const app = /^#!thistle:([^\n]+)\n/.exec(source);
-
-    if (app) {
-      if (!this.apps.has(app[1]!)) bad("ENOEXEC", `${path}: missing app ${app[1]}`);
-      return;
-    }
-
-    if (source.startsWith("#!/bin/thsh\n") || source.startsWith("#!/bin/sh\n")) {
-      if (!this.apps.has("thsh")) bad("ENOEXEC", "shell is not installed");
-      return;
-    }
-
-    bad("ENOEXEC", `${path}: unknown executable format`);
-  }
-
-  private executableCred(path: string, node: Reg, base: Cred): Cred {
+  private executableCred(path: string, node: Reg, base: ProcCred): ProcCred {
     let cred = fullCred(base);
     const mode = node.mode;
     const privileged = this.setId && !!(mode & 0o6000);
@@ -234,38 +233,43 @@ export class Kern {
     return cred;
   }
 
-  start(name: string, argv: string[], par: Proc, opt: Start = {}): Proc {
+  start(name: string, argv: string[], par: Proc, opt: Start = emptyStart()): Proc {
+    // Retain shared pipe endpoints before the child starts; explicit descriptor tables own their own references.
     const path = this.which(name, par);
     const h = this.fs.at(path, par.cwd, procFsCred(par));
     const node = h.node instanceof Reg ? h.node : bad("ENOEXEC", path);
     const pid = this.seq++;
+    const streams = opt.io;
     const io: Io = {
-      sin: opt.io?.sin ?? par.fds.get(0)?.input ?? new MemIn(),
-      sout: opt.io?.sout ?? par.fds.get(1)?.output ?? new MemOut(),
-      serr: opt.io?.serr ?? par.fds.get(2)?.output ?? new MemOut(),
+      sin: (streams === null ? null : streams.sin) ?? par.input(0) ?? new MemIn(),
+      sout: (streams === null ? null : streams.sout) ?? par.output(1) ?? new MemOut(),
+      serr: (streams === null ? null : streams.serr) ?? par.output(2) ?? new MemOut(),
     };
-    if (!opt.fds) {
-      io.sin.holdR?.();
-      io.sout.hold?.();
-      if (io.serr !== io.sout) io.serr.hold?.();
-    }
+    if (!opt.fds) holdStandardIo(io);
     const cred = this.executableCred(path, node, par.cred);
-    const p = new Proc(
-      pid, par.pid, opt.pgid ?? pid, path, [name, ...argv], opt.cwd ?? par.cwd,
-      new Map(opt.env ?? par.env), cred, io,
-    );
+    const p = new Proc({ pid, ppid: par.pid, pgid: opt.pgid ?? pid, cmd: path, argv: [name, ...argv], cwd: opt.cwd ?? par.cwd, env: new Map(opt.env ?? par.env), cred, io });
     if (opt.fds) {
       p.fds.clear(); p.allHeld = true;
       for (const [n, f] of opt.fds) {
-        f.input?.holdR?.(); f.output?.hold?.();
-        const q = new Fd(f.input, f.output, f.path, f.rd, f.wr, f.add, f.clo); q.pos = f.pos; p.fds.set(n, q);
+        f.hold();
+        const q = new Fd(f.input, f.output, f.path, { rd: f.rd, wr: f.wr, add: f.add, clo: f.clo }); q.pos = f.pos; p.fds.set(n, q);
       }
     }
     p.mask = par.mask;
     this.procs.set(pid, p);
     par.kids.add(pid);
-    this.sched.add(p, async () => this.run(p, path, (await node.materialise()).slice(), argv));
+    this.sched.add(p, () => this.runMaterialised(p, path, node, argv));
     return p;
+  }
+
+  /**
+   * The task closure stays synchronous. The asynchronous materialisation is a
+   * named Thistle kernel method, which Bake can lower to a native coroutine
+   * without synthesising an asynchronous capturing closure.
+   */
+  private async runMaterialised(p: Proc, path: string, node: Reg, argv: string[]): Promise<void> {
+    const image = (await node.materialise()).slice();
+    await this.run(p, path, image, argv);
   }
 
   async exec(name: string, argv: string[], env: Map<string, string>, p: Proc): Promise<never> {
@@ -280,7 +284,7 @@ export class Kern {
 
     const image = (await node.materialise()).slice();
 
-    this.validateExecutable(handle.path, image);
+    validateExecutable(this.apps, handle.path, image);
 
     const fullArgv = argv.length
       ? [...argv]
@@ -296,74 +300,46 @@ export class Kern {
     );
   }
 
+
+  private async processFailure(p: Proc, error: Error | string): Promise<number> {
+    if (p.sig) return 128 + p.sig;
+    if (error instanceof KErr && error.code === "EPIPE") return 141;
+    const code = error instanceof KErr ? error.code === "EINTR" ? 130 : error.code === "ENOEXEC" || error.code === "EACCES" ? 126 : error.code === "ENOENT" ? 127 : 1 : 1;
+    const output = p.output(2);
+    if (output !== null) await output.wr(enc(`${p.argv[0] ?? p.cmd}: ${msg(error)}\n`));
+    return code;
+  }
+
   private async run(p: Proc, path: string, bin: Uint8Array, argv: string[]): Promise<void> {
+    // ExecReplace keeps the PID while replacing image, descriptors and credentials; termination releases retained references once.
     p.state = "run";
     let code = 126;
     try {
       for (;;) {
         try {
-          if (bin.length >= 4 && bin[0] === 0 && bin[1] === 0x61 && bin[2] === 0x73 && bin[3] === 0x6d) {
-        code = await new Wasi(new Sys(this, p)).run(bin, [path, ...argv]);
-      } else if (isExe(bin)) {
-        let x: Exe;
-        try { const q = codec.unpack(bin); x = q instanceof Exe ? q : bad("ENOEXEC", `${path}: not an executable`); }
-        catch (e) { x = bad("ENOEXEC", `${path}: ${e instanceof Error ? e.message : String(e)}`); }
-        code = x.machine === "thistle64"
-          ? x.isa === "rv64gc" ? bad("ENOEXEC", "RV64GC execution is supplied by the Teto fork") : await new Vm64(new Sys(this, p)).run(x, [path, ...argv])
-          : await new Vm(new Sys(this, p)).run(x, [path, ...argv]);
-      } else {
-        const src = new TextDecoder().decode(bin);
-        const m = /^#!thistle:([^\n]+)\n/.exec(src);
-        if (m) {
-          const a = this.apps.get(m[1]!) ?? bad("ENOEXEC", `${path}: missing app ${m[1]}`);
-          const s = new Sys(this, p);
-          code = argv.includes("--help") ? await a.help(s) : await a.run(s, argv);
-        } else if (src.startsWith("#!/bin/thsh\n") || src.startsWith("#!/bin/sh\n")) {
-          const a = this.apps.get("thsh") ?? bad("ENOEXEC", "shell is not installed");
-          code = await a.run(new Sys(this, p), [path, ...argv]);
-        } else bad("ENOEXEC", `${path}: unknown executable format`);
-      }
+          code = await executeImage(this, p, path, bin, argv);
 
           break;
         } catch (error) {
-          if (!(error instanceof ExecReplace)) throw error;
+          if (!(error instanceof ExecReplace)) throw error instanceof Error ? error : new Error(typeof error === "string" ? error : "non-Error kernel exception");
 
-          for (const [fd, descriptor] of [...p.fds]) {
-            if (!descriptor.clo) continue;
-
-            descriptor.input?.releaseR?.();
-            descriptor.output?.close?.();
-            p.fds.delete(fd);
-          }
+          replaceProcessImage(p, error);
 
           path = error.path;
           bin = error.image;
           argv = error.args;
 
-          p.cmd = error.path;
-          p.argv = [...error.argv];
-          p.env = new Map(error.env);
-          p.cred = fullCred(error.cred);
-          p.fsuid = credUid(p.cred);
-          p.fsgid = credGid(p.cred);
 
           this.log(`proc: pid=${p.pid} exec=${path}`);
         }
       }
     } catch (e) {
-      if (p.sig) code = 128 + p.sig;
-      else if (e instanceof KErr && e.code === "EPIPE") code = 141;
-      else {
-        code = e instanceof KErr ? e.code === "EINTR" ? 130 : e.code === "ENOEXEC" || e.code === "EACCES" ? 126 : e.code === "ENOENT" ? 127 : 1 : 1;
-        await p.fds.get(2)?.output?.wr(enc(`${p.argv[0]}: ${msg(e)}\n`));
-      }
+      code = await this.processFailure(p, e instanceof Error ? e : typeof e === "string" ? e : "non-Error process failure");
     } finally {
       if (p.allHeld) {
-        for (const f of p.fds.values()) { f.input?.releaseR?.(); f.output?.close?.(); }
+        for (const f of p.fds.values()) f.release();
       } else {
-        p.fds.get(0)?.input?.releaseR?.();
-        p.fds.get(1)?.output?.close?.();
-        if (p.fds.get(2)?.output !== p.fds.get(1)?.output) p.fds.get(2)?.output?.close?.();
+        releaseStandardIo(p);
       }
       p.end(code);
       this.log(`proc: pid=${p.pid} exit=${code} cmd=${path}`);
@@ -372,18 +348,19 @@ export class Kern {
 
   async wait(pid: number, par: Proc): Promise<number> {
     const p = this.procs.get(pid) ?? bad("ESRCH", String(pid));
-    if (p.ppid !== par.pid && (par.cred.euid ?? par.cred.uid ?? 0) !== 0) bad("ECHILD", String(pid));
+    if (p.ppid !== par.pid && par.cred.euid !== 0) bad("ECHILD", String(pid));
     const n = await p.done;
     this.reap(pid, par);
     return n;
   }
 
-  reap(pid: number, par?: Proc): void {
+  reap(pid: number, par: Proc | null = null): void {
     if (pid <= 2) return;
-    const p = this.procs.get(pid);
+    const p = this.procs.get(pid) ?? null;
     if (!p || p.code === null) return;
     this.procs.delete(pid);
-    (par ?? this.procs.get(p.ppid))?.kids.delete(pid);
+    const parent = par ?? (this.procs.get(p.ppid) ?? null);
+    if (parent !== null) parent.kids.delete(pid);
   }
 
   kill(id: number, sig: Sig, by: Proc): number {
@@ -392,11 +369,9 @@ export class Kern {
     let n = 0;
     for (const p of q) {
       if (p.pid === 1) continue;
-      if ((by.cred.euid ?? by.cred.uid ?? 0) !== 0 && (by.cred.ruid ?? by.cred.uid ?? 0) !== (p.cred.ruid ?? p.cred.uid ?? 0)) bad("EPERM", String(p.pid));
-      if (sig !== 0) {
-        p.signal(sig);
-        if (sig === 9 || p.state === "sleep") p.end(128 + sig);
-      }
+      if (by.cred.euid !== 0 && by.cred.ruid !== p.cred.ruid) bad("EPERM", String(p.pid));
+      if (sig !== 0) p.signal(sig);
+      if (sig !== 0 && (sig === 9 || p.state === "sleep")) p.end(128 + sig);
       n++;
     }
     this.log(`signal: sig=${sig} target=${id} sender=${by.pid}`);
@@ -405,7 +380,7 @@ export class Kern {
 
   ps(): PInfo[] {
     return [...this.procs.values()].sort((a, b) => a.pid - b.pid).map(p => ({
-      pid: p.pid, ppid: p.ppid, pgid: p.pgid, uid: p.cred.euid ?? p.cred.uid ?? 0,
+      pid: p.pid, ppid: p.ppid, pgid: p.pgid, uid: p.cred.euid,
       state: p.state, ms: p.ms(), cmd: p.argv.join(" "),
     }));
   }
@@ -420,10 +395,10 @@ export class Kern {
   }
 
   stop(by: Proc): void {
-    if ((by.cred.euid ?? by.cred.uid ?? 0) !== 0) bad("EPERM", "reboot");
+    if (by.cred.euid !== 0) bad("EPERM", "reboot");
     for (const p of this.procs.values()) if (p.pid !== 1 && p.pid !== by.pid) p.signal(15);
     this.log("system: reboot requested");
-    this.haltFn?.();
+    if (this.haltFn !== null) this.haltFn();
   }
 
   fd(p: Proc): number {
@@ -431,16 +406,14 @@ export class Kern {
     return bad("EMFILE", "descriptor table full");
   }
 
-  cloneFd(p: Proc, old: number, nu?: number): number {
+  cloneFd(p: Proc, old: number, nu: number | null = null): number {
     const f = p.fds.get(old) ?? bad("EBADF", String(old));
     const n = nu ?? this.fd(p);
     if (n === old) return n;
-    const q = p.fds.get(n);
-    q?.input?.releaseR?.();
-    q?.output?.close?.();
-    f.input?.holdR?.();
-    f.output?.hold?.();
-    p.fds.set(n, new Fd(f.input, f.output, f.path, f.rd, f.wr, f.add));
+    const q = p.fds.get(n) ?? null;
+    if (q !== null) q.release();
+    f.hold();
+    p.fds.set(n, new Fd(f.input, f.output, f.path, { rd: f.rd, wr: f.wr, add: f.add, clo: false }));
     return n;
   }
 }

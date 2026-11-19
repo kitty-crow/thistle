@@ -2,7 +2,7 @@ name: Notify dependants
 
 on:
   workflow_run:
-    workflows: [CI]
+    workflows: [Kernel validation]
     types: [completed]
 
 permissions:
@@ -29,7 +29,7 @@ jobs:
             echo "::notice::Dependency notification skipped because the KITTYX automation credentials are not configured."
           fi
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         if: steps.automation.outputs.configured == 'true'
 
       - uses: actions/create-github-app-token@v2
@@ -46,4 +46,4 @@ jobs:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           SOURCE_REPOSITORY: ${{ github.repository }}
           SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
-        run: python3 scripts/ci/notify-dependants.py
+        run: python3 scripts/notify-dependants.py

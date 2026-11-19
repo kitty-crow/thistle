@@ -1,0 +1,3 @@
+# word
+
+Scalar operations for native lowering: `word`, `sx`, `ux`, `u32word`, `mulU32`, `wordToI32`, `wordToU32`, `wordToPtr` provide integer conversion and fixed-width arithmetic. `bitsToF32`, `bitsToF64`, `f32ToBits`, `f64ToBits`, `roundF32` convert raw floating-point representations through scratch storage. `floatIsNaN`, `floatSqrt`, `floatMin`, `floatMax`, `floatTrunc`, `floatFloor`, `floatCeil`, `floatToI64`, `floatToU64`, `wordToFloat`, `unsignedWordToFloat` supply numerical primitives. `divSigned`, `divUnsigned`, `mulHighSigned`, `mulHighSignedUnsigned`, `mulHighUnsigned`, `remSigned`, `remUnsigned` preserve guest integer semantics.

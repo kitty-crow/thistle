@@ -1,6 +1,3 @@
-[submodule "kittyx"]
-	path = kittyx
-	url = https://github.com/kitty-crow/kittyx.git
-[submodule "src/asm"]
-	path = src/asm
-	url = https://github.com/kitty-crow/thistle-asm.git
+[submodule "asm"]
+	path = asm
+	url = https://github.com/kittycrow-kittyx/thistle-asm.git
